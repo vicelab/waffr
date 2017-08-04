@@ -39,12 +39,9 @@ boundaries, however all inherit the default `WGS 84 / Lon Lat` CRS, reproduced b
 ```{r loadData}
 # ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
 # ca_boundary <- readOGR("input/MAPS/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
-ca_boundary.path <- "Input/SHAPEFILES/cb_2014_CA_5m.shp"
+ca_boundary.path <- "Input/SHAPEFILES/cnty24k09/cnty24k09_state_poly_s100.shp"
 lc.dir <- "input/CDL_CA_WGS84"
-# equal to CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs")
 lc.crs <- CRS("+init=epsg:4326")
-kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
-kc.lut <- cbind(index = 1:nrow(kc.lut), kc.lut)
 ```
 
 # 1. Collect landcover rasters and inspect
