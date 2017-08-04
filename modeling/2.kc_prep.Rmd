@@ -1,0 +1,183 @@
+---
+title: "2.kc_prep.Rmd"
+author: "asmtry"
+date: "February 6, 2017"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = '../', warning = TRUE, collapse = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+
+pkgTest("tools", "readr", "lubridate", "ggplot2")
+```
+
+In this file, we create the Kc rasters using Kc values compiled for the CUP+ model.
+Out of 70 crops that we have Kc values for, 
+
+We also import Kc data compiled by Snyder, Orang, Bali, Eching, and Zaccaria 2000 (revised 2014). 
+The data was compiled for the `Basic Irrigation Scheduling` model (BISe), an Excel application that 
+estimates irrigation water requirement and crop ET using the ASCE-PM equation. Kcs are found on the 
+`CropRef` worksheet of the BISe application. Remarks are as follows:
+
+> Kc data marked in blue were derived in work by T.C. Hsiao and former students at UC Davis. 
+
+> The Kc for corn was derived by Steduto and Hsiao (1998) maize canopies uhnder two soil water regimes II. Seasonal trends of evapotranspiration, carbon dioxide assimilation and canopy conductance, and as related to leaf area index. Agric. and forest  Meteorol. 89:185-200.
+The Kc =1.05 for cotton is based on work by Held and Hsiao
+The Kc = 1.00 for sorghum is based on work by Held and Hsiao.  Millet and 
+For tomato a Kc = 1.10 was selected based on unpublished data from Snyder and Cahn and on expeiments by Held & Hsiao.  The kc values reported by Held and Hsiao were slightly higher, but the tomatoes were full canopy (not in beds, which is the normal practice). The data from Snyder and Cahn were typical for California practices.
+The data for sunflower were based on data from Hsiao (personal communication)
+
+
+> Kc data marked in green were derived from several sources.  The assumption is that corn has a Kc = 1.00 for ETo calculated using the Pruitt and Doorenbos (1977) hourly ETo equation that is used by the California Irrigation Management Information System CIMIS
+
+> Snyder and Pruitt (1992) Evapotranspiration Data Management in California Irrigation & Drainage Session Proceedings/Water Forum '92, EE,HY,IR,WR Div/ASCE, Baltimore, MD/August 2-6, 1992. pp128-133..
+
+
+> Relative Kp values for alfalfa for the crops marked in green were selected from
+ 
+> Wright (1982) New Evapotranspiration Crop Coefficients. Presented at Irrigation and Drainage Specialty Conference, ASCE, July 17-20, Albuquerque, New Mexico. pp 57-74.
+
+> The peak Kp values were corn = 0.95, alfalfa = 1.0, beans = 1.0, potatoes = 0.8, sugar beets = 1.0, peas = 0.9, and cereals = 1.0.  Because the equation for ETo was not available at that time, the Kp values cannot be used directly.  However, assuming the Kc = 1.00 is correct for corn, then the approximate peak Kc values for the other crops are found by dividing the Kp by 0.95.  The peak  Kc values for a grass ETo are corn = 1.00, alfalfa = 1.05, beans = 1.00, potatoes = 0.85, sugar beets = 1.05, peas =0.95, and cereals = 1.05.
+
+> The rice Kc = 1.1 more current data on typical ETo from CIMIs and the article 
+
+> Lourence and Pruitt (1971) Energy balance and water use of rice grown in the Central Valley of California. Agron. J. 63:827-832.
+ 
+> Lourence and Pruitt found ET of rice to be about 4-5% higher than lysimeter measured grass in Davis.  Rice ET was measured by Bowen ratio about 25 miles north of Davis.  The postulated that the ETo would be less in the rice growing region because of higher humidity.  As a result, they recommend a Kc = 1.20 to 1.25.  However, CIMIS data indicates that the ETo is only about 5% higher in Davis than at the Nicolas site and in Colusa, which are near the rice growing region. As a result, we would recommend a Kc = 1.05 x 1.05 = 1.10 to estimate ETrice from ETo estimated at a CIMIS station in the rice growing region..    
+
+# Step 1: Prepare lookup table
+
+We multiply coefficients by 100 to get integer values between 0 and 100. This will allow us to reclassify the landcover rasters and retain the 8-bit grayscale color depth. If we were to crate rasters with decimal values, the values would be stored as 4-byte floating point and we'd end up with a huge 32-bit image that would be very large on disk, large in memory, and would process at a glacial pace. Of course, it means sacrificing a bit of precision (which we will quantify later).
+```{r prepareCDL-Kc-LUT}
+CDL.Kc.LUT <- read_csv("input/TABLES/cup+_kc_cdl.csv")
+
+CDL.Kc.LUT[["start.date.1"]] <- 
+  as.Date(paste(CDL.Kc.LUT[["Planting Month"]], CDL.Kc.LUT[["Planting Day"]], 2001, sep = "-"), 
+          format = "%m-%d-%Y")
+CDL.Kc.LUT[["end.date.1"]] <- 
+  as.Date(paste(CDL.Kc.LUT[["Harvest Month"]], CDL.Kc.LUT[["Harvest Day"]], 
+                ifelse(CDL.Kc.LUT[["Harvest Month"]] < CDL.Kc.LUT[["Planting Month"]], 2002, 2001),  
+                sep = "-"), 
+          format = "%m-%d-%Y")
+CDL.Kc.LUT[["start.date.2"]] <- 
+  as.Date(paste(CDL.Kc.LUT[["2nd Planting Month"]], CDL.Kc.LUT[["2nd Planting Day"]], 2001, sep = "-"), 
+          format = "%m-%d-%Y")
+CDL.Kc.LUT[["end.date.2"]] <- 
+  as.Date(paste(CDL.Kc.LUT[["2nd Harvest Month"]], CDL.Kc.LUT[["2nd Harvest Day"]], 
+                ifelse(CDL.Kc.LUT[["2nd Harvest Month"]] < CDL.Kc.LUT[["2nd Planting Month"]], 2002, 2001),  
+                sep = "-"), 
+          format = "%m-%d-%Y")
+
+CDL.Kc.LUT[["is.doublecrop"]] <- !is.na(CDL.Kc.LUT[["2nd Planting Day"]])
+
+# TEST: Remove unrepresented crops and print
+# TODO: Move to unit tests
+warning("The following landcover classes do not have matching coefficients, and will be removed: ", 
+        paste(unique(unlist(CDL.Kc.LUT[!complete.cases(CDL.Kc.LUT[["Kc AB"]]),"cdl_name"])), " "))
+CDL.Kc.LUT <- CDL.Kc.LUT[complete.cases(CDL.Kc.LUT[["Kc AB"]]),]
+
+# Scale coeff by 100
+CDL.Kc.LUT[,c("Kc AB", "Kc CD", "Kc E", "2nd Kc AB", "2nd Kc CD", "2nd Kc E")] <- 
+  CDL.Kc.LUT[,c("Kc AB", "Kc CD", "Kc E", "2nd Kc AB", "2nd Kc CD", "2nd Kc E")] * 100
+
+# Calculate length of growing period
+CDL.Kc.LUT[["lgp.1"]] <- CDL.Kc.LUT$end.date.1 - CDL.Kc.LUT$start.date.1
+CDL.Kc.LUT[["lgp.2"]] <- CDL.Kc.LUT$end.date.2 - CDL.Kc.LUT$start.date.2
+
+# Calculate dates of Kc inflection points
+# TODO: Clean up with a function; DRY
+CDL.Kc.LUT <-
+  cbind(CDL.Kc.LUT, t_a.1 = CDL.Kc.LUT[["start.date.1"]],
+        t_b.1 = CDL.Kc.LUT[["start.date.1"]] + (CDL.Kc.LUT[["lgp.1"]] * CDL.Kc.LUT[["% season B"]] * 0.01),
+        t_c.1 = CDL.Kc.LUT[["start.date.1"]] + (CDL.Kc.LUT[["lgp.1"]] * CDL.Kc.LUT[["% season C"]] * 0.01),
+        t_d.1 = CDL.Kc.LUT[["start.date.1"]] + (CDL.Kc.LUT[["lgp.1"]] * CDL.Kc.LUT[["% season D"]] * 0.01),
+        t_e.1 = CDL.Kc.LUT[["end.date.1"]],
+        t_a.2 = CDL.Kc.LUT[["start.date.2"]],
+        t_b.2 = CDL.Kc.LUT[["start.date.2"]] + (CDL.Kc.LUT[["lgp.2"]] * CDL.Kc.LUT[["% season B"]] * 0.01),
+        t_c.2 = CDL.Kc.LUT[["start.date.2"]] + (CDL.Kc.LUT[["lgp.2"]] * CDL.Kc.LUT[["% season C"]] * 0.01),
+        t_d.2 = CDL.Kc.LUT[["start.date.2"]] + (CDL.Kc.LUT[["lgp.2"]] * CDL.Kc.LUT[["% season D"]] * 0.01),
+        t_e.2 = CDL.Kc.LUT[["end.date.2"]]
+        )
+```
+
+Next we create the actual look-up table that contains daily Kc values, computed according to the heuristic from CUP+. We're using if-else tests for clarity, but the following could be vectorized for a marginal speedup.
+## TODO: Vectorize with logical array (http://kitchingroup.cheme.cmu.edu/blog/2013/02/23/Vectorized-piecewise-functions/)
+```{r makeCDL-Kc-LUT}
+
+# Plot and inspect
+# plot(seq.Date(as.Date("2001-01-01"), by = "day", length.out = 730), calculateKcDaily(seq.Date(as.Date("2001-01-01"), by = "day", length.out = 730), as.data.frame(CDL.Kc.LUT)[4,]))
+
+# Create daily Kc values for 2 years.
+CDL.Kc.LUT.daily <- do.call("rbind", 
+                            by(CDL.Kc.LUT, 1:nrow(CDL.Kc.LUT), 
+                               function(row) rbind(calculateKcDaily(seq.Date(as.Date("2001-01-01"), by = "day", length.out = 730), row))))
+
+# TEST: See if we can wrap the coefficients of the second year into the beginning of the first without overlap
+# DRY: This test should occur when CDL.Kc.LUT is imported.
+# TODO: Move to unit tests
+if(any(c(by(CDL.Kc.LUT.daily, 1:nrow(CDL.Kc.LUT.daily), function (row) any(row[1:365]!=0 & row[366:730]!=0)))))
+  warning("oops, you STILL may have double crops with overlapping growing periods for: ",
+          paste(which(c(by(CDL.Kc.LUT.daily, 1:nrow(CDL.Kc.LUT.daily), function (row) any(row[1:365]!=0 & row[366:730]!=0)))), collapse=" "))
+
+# Wrap into single year and label
+CDL.Kc.LUT.daily <- pmax(CDL.Kc.LUT.daily[ , 1:365], CDL.Kc.LUT.daily[ , 366:730])
+CDL.Kc.LUT.daily <- CDL.Kc.LUT.daily[ , -(366:730)]
+colnames(CDL.Kc.LUT.daily) <- 1:365
+CDL.Kc.LUT.daily <- cbind(value = CDL.Kc.LUT[["VALUE"]], cdl_name = CDL.Kc.LUT[["cdl_name"]], as.data.frame(CDL.Kc.LUT.daily))
+
+# TODO: Evaluate if it's more readable to set NA earlier in logic
+CDL.Kc.LUT.daily[CDL.Kc.LUT.daily == 0] <- NA
+
+# Plot and inspect
+#par(mfrow = c(7, 7))
+#for (row in 1:nrow(CDL.Kc.LUT.daily)){
+#  plot(1:365,CDL.Kc.LUT.daily[row,3:367])
+#}
+```
+
+This final structure is not "tidy", in the sense of variables forming columns and observations forming rows.
+It's a 3-dimensional lookup table project into two.
+
+```{r saveDL-Kc-LUT}
+saveRDS(CDL.Kc.LUT.daily, "output/tables/CDL_Kc_LUT_daily.rds")
+write.csv(CDL.Kc.LUT.daily, "output/tables/CDL_Kc_LUT_daily.csv")
+```
+
+# Create special LUT for dual-cropped regions for later dis-entanglement
+
+```{r}
+# Subset to only dual-cropped regions
+CDL.LUT.dual <- CDL.Kc.LUT[CDL.Kc.LUT[["is.doublecrop"]] == TRUE,]
+# Create daily Kc values for 2 years.
+CDL.LUT.dual <- do.call("rbind", 
+                            by(CDL.LUT.dual, 1:nrow(CDL.LUT.dual), 
+                               function(row) rbind(tagKcDaily(seq.Date(as.Date("2001-01-01"), by = "day", length.out = 730), row))))
+
+CDL.LUT.dual <- pmax(CDL.LUT.dual[ , 1:365], CDL.LUT.dual[ , 366:730])
+CDL.LUT.dual <- CDL.LUT.dual[ , -(366:730)]
+colnames(CDL.LUT.dual) <- 1:365
+CDL.LUT.dual <- cbind(value = CDL.Kc.LUT[CDL.Kc.LUT[["is.doublecrop"]] == TRUE,][["VALUE"]], cdl_name = CDL.Kc.LUT[CDL.Kc.LUT[["is.doublecrop"]] == TRUE,][["cdl_name"]], as.data.frame(CDL.LUT.dual))
+CDL.LUT.dual[CDL.LUT.dual == 0] <- NA
+
+saveRDS(CDL.LUT.dual, "output/tables/CDL_LUT_dualtagged.rds")
+write.csv(CDL.LUT.dual, "output/tables/CDL_LUT_dualtagged.csv")
+```
+
+
+
+# TODO
+* Revise method of modeling dual-cropped regions
+* Refactor math using interpolation function
+
+* Move tests to unit tests
+* Move 'Plot and inspect' comments to sanity check sheets
+
+* Refactor to DRY
+
+

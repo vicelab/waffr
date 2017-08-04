@@ -1,0 +1,392 @@
+---
+title: "Figures: 2008-2015 totals by county"
+author: "asmtry"
+output:
+  html_document:
+    css: base.css
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
+        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+        "rgdal", "devtools")
+install_github("wilkox/ggfittext")
+install_github("wilkox/treemapify")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggfittext", "treemapify")
+ggplot2::theme_set(theme_bw())
+```
+## Import data
+
+`cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
+and the corresponding name and index number in the FAO Indicative Crop Classification (ICC 1.1).
+
+`roi.table` contains relations from the regions of interest used to aggregrate the WF, PPT, 
+and CWU calculations performed in steps 8-10. Here, the relation is the attribute table from a
+shapefile of California county political boundaries. Attributes include: county index, name, and
+corresponding DWR hydrologic region.
+
+`ca.counties` contains the shapefile, on which `roi.table` is based.
+
+`ca.hr` contains the shapefile of DWR hydrologic regions, for California.
+
+`wf.master.wyear` contains annual sums of cwr, ppt, etc, wf, and harvested tons/acres/USD 
+aggregrated by crop, county, and water year. It only includes the counties that have corresponding 
+entries in the County Ag Comissioners (CAC) annual yield reports. Counties that had modeled ag 
+production, without an accompanying entry in the CAC annual reports were omitted.
+
+`wf.master.cyear` contains the above, except aggregrated by calendar year (instead of water year). 
+This data set includes the extra year of 2007.
+
+`yield.master` contains all of the statistics reported by the CAC annual reports (production tons, 
+harvested acres, value in USD), for the modeled crops.
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+ca.hr <- readOGR("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
+wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
+wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+## Create some functions for commonly used summary statistics
+
+Typially in a boxplot, outliers are marked as values that fall outside of 1.5 times the interquartile range 
+avove and below the 25% and 75% quantiles. `is_extreme()` is a function that we define below, that applys the
+same criteria and returns TRUE if the value is a suspected outlier/extreme falue, and false otherwise.
+
+```{r summaryFuns}
+is_extreme <- function(series) {
+  #' Tags values in a series according to whether or not they would appear as oulier points
+  #` in a Tukey boxplot (values that lie outside of the H-spread.)
+  #` Specifically, these are values that are less or greater than the 1st and 3rd quartiles
+  #` plus 1.5 times the interquartile range.
+  #' @param series Vector of type numeric (int or double)
+  #' @return Vector of type logical, TRUE if the value is an outlier, FALSE if it is not
+  return(series < (quantile(series, 0.25) - (1.5 * IQR(series)) ) | series > (quantile(series, 0.75) + (1.5 * IQR(series)) ))
+}
+```
+
+## Clean erronious observations
+
+Here, we clean obviously erronious observations.
+
+I think the 2009 Riverside CAC survey severly under-reports the "Oats" category to the point that
+it makes the "Oats" water footprint blow up (several orders of magnitude higher than baseline, see
+the by-year summary notebook).
+
+```{r cleanData}
+wf.master.wyear <- wf.master.wyear %>%
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+```
+
+# C1: Average statewide water demand *for all* years, by crop
+
+Here, we sum all daily volumes of cwr, ppt, et, and wf by crop, over each calendar and water year.
+Then, we average all of the yearly sums, to produce an "average year" value, for each parameter.
+```{r calc1}
+wf.master.bycounty.cyear <- wf.master.cyear %>%
+  mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
+  `attr<-`("year_type", "calendar") %>%
+  `attr<-`("summary_type", "total")
+
+wf.master.bycounty.wyear <- wf.master.wyear %>%
+  mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  ungroup() %>%
+  `attr<-`("year_type", "water") %>%
+  `attr<-`("summary_type", "total")
+
+wf.master.byHR.wyear <- wf.master.wyear %>%
+  left_join(roi.table %>% 
+              select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
+  group_by(`HR_NAME`, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  ungroup() %>%
+  `attr<-`("year_type", "water") %>%
+  `attr<-`("summary_type", "total") %>%
+  `attr<-`("summarized_by", "DWR-HR")
+``` 
+
+# P1: Annual Blue WF, CWR, and PPT, county-wise
+
+It appears that there are a fair number of counties that are significantly greater than the median
+$WF_{blue}$. The second plot identifies some of these counties by labling the top 99th percentile 
+counties by $WF_{blue}$. Note that we're tagging entries in the top 99% *per year*, not the top 
+99% overall.
+
+```{r plot1}
+# local({
+  # wfb <-
+  wf.master.bycounty.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.b, color = County)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    labs(title = "Annual WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual Blue WF (m3/tonne)", 
+         color = "County Name") +
+    theme(legend.position = "bottom", legend.spacing.x=unit(1,"line"),
+          legend.title = element_blank(), legend.key.size = unit(.5, 'lines'),
+          legend.direction = 'horizontal', legend.key.width=unit(3,"line")) +
+    theme(axis.text.y = element_text(angle = 90))
+
+  # wfb.labeled <
+  wf.master.bycounty.wyear %>%
+    group_by(Year) %>%
+    mutate(percentile = percent_rank(wf.b)) %>%
+    ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.b, color = County)) +
+    geom_label_repel(mapping = aes(x = Year, y = wf.b, 
+                                   label = ifelse(percentile > 0.99, County, NA), 
+                                   fill = County), 
+                     color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                     point.padding = unit(0.5, "lines"), na.rm = TRUE) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    labs(title = "Annualv WF by county for 2008 - 2015 water years",
+         subtitle = "Top 1% (per year) WF counties labled",
+         x = "Water Year", y = "Annual Blue WF (m3/tonne)", 
+         color = "County Name") +
+    guides(fill = "none", color = "none") +
+    theme(axis.text.y = element_text(angle = 90))
+
+  # cwr.labeled <
+  wf.master.bycounty.wyear %>%
+    group_by(Year) %>%
+    mutate(percentile = percent_rank(cwr)) %>%
+    ggplot() +
+    geom_point(mapping = aes(x = Year, y = cwr, color = County)) +
+    geom_label_repel(mapping = aes(x = Year, y = cwr, 
+                                   label = ifelse(percentile > 0.95, County, NA), 
+                                   fill = County), 
+                     color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                     point.padding = unit(0.5, "lines"), na.rm = TRUE) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    labs(title = "Annual CWR by county for 2008 - 2015 water years",
+         subtitle = "Top 5% (per year) CWR counties labled",
+         x = "Water Year", y = "Annual CWR (m3)", 
+         color = "County Name") +
+    guides(fill = "none", color = "none") +
+    theme(axis.text.y = element_text(angle = 90))
+
+  # ppt.labeled <
+  wf.master.bycounty.wyear %>%
+    group_by(Year) %>%
+    mutate(percentile = percent_rank(ppt)) %>%
+    ggplot() +
+    geom_point(mapping = aes(x = Year, y = ppt, color = County)) +
+    geom_label_repel(mapping = aes(x = Year, y = ppt, 
+                                   label = ifelse(percentile > 0.97, County, NA), 
+                                   fill = County), 
+                     color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                     point.padding = unit(0.5, "lines"), na.rm = TRUE) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    labs(title = "Annual precipitation by county for 2008 - 2015 water years",
+         subtitle = "Top 3% (per year) PPT counties labled",
+         x = "Water Year", y = "Annual PPT (m3)", 
+         color = "County Name") +
+    guides(fill = "none", color = "none") +
+    theme(axis.text.y = element_text(angle = 90))
+  
+  #plot_grid(arrangeGrob(wfb_vs_wfg, etb_vs_etg, ncol=1), nrow = 1)
+# })
+```
+
+# P2: Annual Blue WF, CWR, and PPT, county-wise w/ Hydrologic Regions
+
+We can also group counties by a classification based on location. Here, we are using regional
+classifications that align with the major drainage basins of California. These `Hydrologic Regions`
+correspond to drainage basins that are used for a variety of planning purposes and DWR programs,
+including the CA Water plan.
+
+On the right, we use a log/log plot in order to examine the structure of counties on the low-end of WF,
+since a few, high-WF counties greately influence the scale.
+
+```{r plot2}
+local({
+  
+wfb_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+  geom_line(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Annual Blue WF by county for 2008 - 2015 water years",
+       x = "Water Year", y = "Annual Blue WF (m3/tonne)", 
+       color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+wfb_icc_log <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+  geom_line(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  annotation_logticks() +
+  labs(title = "Annual Blue WF by county for 2008 - 2015 water years",
+       subtitle = ("Log 10 scale"),
+       x = "Water Year", y = "Annual Blue WF (m3/tonne)", 
+       color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none")
+
+  l1 <- get_legend(wfb_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(wfb_icc, wfb_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+# P2.5: CWR and PPT w/ Hydrologic Regions
+```{r plot2-5}
+local({
+  
+cwr_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = cwr, color = HR_NAME)) +
+  geom_line(mapping = aes(x = Year, y = cwr, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Annual CWR by county for 2008 - 2015 water years",
+       x = "Water Year", y = "Annual CWR (m3)", 
+       color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+cwr_icc_log <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = cwr, color = HR_NAME)) +
+  geom_line(mapping = aes(x = Year, y = cwr, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  annotation_logticks() +
+  labs(title = "Annual CWR by county for 2008 - 2015 water years",
+       subtitle = ("Log 10 scale"),
+       x = "Water Year", y = "Annual CWR (m3)", 
+       color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none")
+
+  l1 <- get_legend(cwr_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(cwr_icc, cwr_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+
+local({
+  
+ppt_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = ppt, color = HR_NAME)) +
+  geom_line(mapping = aes(x = Year, y = ppt, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Annual PPT by county for 2008 - 2015 water years",
+       x = "Water Year", y = "Annual PPT (m3)", 
+       color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+ppt_icc_log <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = ppt, color = HR_NAME)) +
+  geom_line(mapping = aes(x = Year, y = ppt, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  annotation_logticks() +
+  labs(title = "Annual PPT by county for 2008 - 2015 water years",
+       subtitle = ("Log 10 scale"),
+       x = "Water Year", y = "Annual PPT (m3)", 
+       color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none")
+
+  l1 <- get_legend(ppt_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(ppt_icc, ppt_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+# P3: Annual Blue WF, CWR by Hydrologic Regions
+
+We can also separate counties by their hydrologic region, to view similar graphs on their own scale.
+
+```{r plot3}
+wf.master.bycounty.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = wf.b, color = County)) +
+  facet_wrap(~HR_NAME, ncol = 3, scales = "free") +
+  geom_line(mapping = aes(x = Year, y = wf.b, color = County)) +
+  geom_label_repel(mapping = aes(x = Year, y = wf.b, 
+                                 label = ifelse(Year == max(wf.master.bycounty.wyear[["Year"]])%m-% months(12),County,NA), 
+                                 color = County), 
+                   box.padding = unit(0.25, "lines"), 
+                   point.padding = unit(0.4, "lines"), nudge_x = 35, na.rm = TRUE, size = 2) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  expand_limits(x = as.Date("2016-01-01")) +
+  labs(title = "Annual Blue WF by county for 2008 - 2015 water years",
+      x = "Water Year", y = "Annual Blue WF  (m3/tonne)", 
+      color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(fill = "none")
+
+wf.master.bycounty.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = cwr, color = County)) +
+  facet_wrap(~HR_NAME, ncol = 3, scales = "free") +
+  geom_line(mapping = aes(x = Year, y = cwr, color = County)) +
+  geom_label_repel(mapping = aes(x = Year, y = cwr, 
+                                 label = ifelse(Year == max(wf.master.bycounty.wyear[["Year"]])%m-% months(12),County,NA), 
+                                 color = County), 
+                   box.padding = unit(0.25, "lines"), 
+                   point.padding = unit(0.4, "lines"), nudge_x = 35, na.rm = TRUE, size = 2) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  expand_limits(x = as.Date("2016-01-01")) +
+  labs(title = "Annual CWR by county for 2008 - 2015 water years",
+      x = "Water Year", y = "Annual Crop Water Requirement (m3)", 
+      color = "County Name") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(fill = "none")
+```

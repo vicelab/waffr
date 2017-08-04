@@ -1,0 +1,363 @@
+---
+title: "notes on raster"
+author: "asmtry"
+date: "February 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Strategies for downscaling categorical rasters
+
+If you need to upscale a raster by an integer scale, it's faster to use `disaggregrate`.
+If you need to upscale a raster by a fractional scale, it's faster to just `resample`,
+instead of `disaggregrating` a larger factor and `resample`-ing to your desired scale.
+
+This example uses a sample of the NASS CDL corpus. We have a landcover raster for
+california composed of categorical integer variables that correspond to land cover types.
+Years <200
+```{r}
+# It's faster to just
+tmp <- raster(lc.table[["abs_path"]][1]) # 56 x 56
+tmp0 <- raster(lc.table[["abs_path"]][10]) # 30 x 30
+tmp1 <- disaggregate(raster(lc.table[["abs_path"]][1]), fact=2) 
+# [149 seconds] # Now 28 x 28
+tmpX <- resample(tmp1, tmp0, method = "ngb", filename = "output/cleaned_inputs/CDL_CA_NAD83/2007X.tif", format = "GTiff", prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+# [Hours] # Now 30 x 30
+
+# Alternatively, just resample from the onset
+tmpY <- resample(tmp, tmp0, method = "ngb", filename = "output/cleaned_inputs/CDL_CA_NAD83/2007Y.tif", format = "GTiff", prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+# [3733 seconds] # Now 30 x 30
+
+compareRaster(tmpX,tmpY, values=TRUE, stopiffalse = TRUE)
+# [1] TRUE
+```
+
+# Strategies for performing map algebra
+## Assignment of values to categorical variables (reclassification) & multiplication
+
+
+```{r}
+tmp <- raster(lc.table[["abs_path"]][10])
+# Generate list of data frames with ID in the first col and day in second col
+s.y <- lapply(kc.lut[,-(1:2)], function(day) data.frame(ID = kc.lut[,1], y = day ))
+
+# Following command takes a hair shy of an hour on bootsy
+reclassed <- subs(tmp, s.y1, filename = "output/cdl2016reclassed.tiff", format = "GTiff", prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+
+# Maxes mem on bootsy
+# Following command takes <60GB and 378 seconds on ts03 (23 cores)
+# 378sec * 365 / (60 * 60 * 24) = 1.6 days computation / year
+# Year worth of Kcs would be approx 5.5GB
+# x 10 yrs = 2 weeks of computation, 55GB
+beginCluster()
+reclassed <-  clusterR(tmp, subs, args=list(y = s.y[[1]], subsWithNA = TRUE), filename = "output/cdl2016reclassed.tiff", format = "GTiff", prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+```
+
+# Comparing size of native .grd `LOG1S` to GTiff `INT1U`
+
+There's no comparison. Sure `LOG1S` be the more efficient format (1-bit monochrome vs 8-bit grayscale), 
+but the `.nc` and `.gri` outputs are uncompressed, so they're very large on disk. `GeoTIFF` compression 
+improves file sizes by almost *two orders of magnitude*.
+```{r}
+# Create per-crop landcover raster masks
+tmp <- raster(lc.table[["abs_path"]][10])
+
+# 148sec, 930MB filesize
+tmp.corn <- calc(tmp, fun=function(x){x == kc.lut[1,"value"]},
+                 filename = "output/cornlog.grd", format = "raster", 
+                 prj = TRUE, progress = "text", datatype = "LOG1S", overwrite = TRUE)
+
+# 169sec, 10MB filesize
+tmp.corn <- calc(tmp, fun=function(x){x == kc.lut[1,"value"]}, 
+                 filename = "output/cornlog.tif", format = "raster", 
+                 prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+
+# 226sec, 932MB filesize
+tmp.corn <- calc(tmp, fun=function(x){x == kc.lut[1,"value"]},
+                 filename = "output/cornlog.nc", format = "CDF", 
+                 prj = TRUE, datatype = "LOG1S", overwrite = TRUE)
+```
+For the record:
+
+| format         | time (s) | filesize   | after 7z |
+|----------------+----------+------------+----------|
+| native (.gri)  |      148 | 931.718 MB | 500 KB   |
+| netCDF (.nc)   |      226 | 932.219 MB | 555 KB   |
+| GeoTIFF (.tif) |      169 | 10.395 MB  | 565 KB   |
+
+# SOLVED: Potential bug in `RasterBrick`
+
+Here, `calc` fails with:
+>     Error in (function (classes, fdef, mtable)  : 
+>       unable to find an inherited method for function ‘writeValues’
+>     for signature ‘"RasterBrick", "logical"’
+>     In addition: Warning messages:
+>     1: In x == index[["value"]] :
+>       longer object length is not a multiple of shorter object length
+>     2: In x == index[["value"]] :
+>       longer object length is not a multiple of shorter object length
+
+The fix is to specify `forceapply = TRUE` in the call to `calc`.
+```{r}
+abs_path <- "output/cleaned_inputs/CDL_CA_NAD83_30m/CDL_2007_06.tif"
+index <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")[,1:2]
+
+test <- calc(raster(abs_path), fun=function(x){x == index[["value"]]},
+              format = "GTiff", prj = TRUE, progress = "text", 
+              datatype = "INT1U", overwrite = TRUE, filename = outpath)
+```
+
+# Speed of `calc`, vectorized approach vs for - loops
+
+```{r}
+# Halted after 17 minutes (2%)
+# Extrapolated, it would take over 14 hrs for each crop
+# (6 days for 10 yrs)
+class_kc_vectorized <- function(lc.path, kc.lut, kc.lut, max.threads, outdir) {
+  dir.create(out.dir, recursive = TRUE, showWarnings = FALSE)
+  apply(kc.lut[1:2,], 1, 
+      function(dailyKc) 
+        calc(brick(lc.path)[[as.numeric(dailyKc["index"])]], 
+             fun=function(cropmask){cropmask * as.numeric(dailyKc[-c(1:3)])}, 
+             format = "GTiff", prj = TRUE, progress = "text", 
+             datatype = "INT1U", overwrite = TRUE, 
+             filename = paste0(outdir, dailyKc["cdl_name"], ".tif"),
+             options="INTERLEAVE=BAND", forceapply = TRUE))
+}
+
+
+# For loop takes over 16 hrs per crop
+class_kc_loop <- function(lc.path, kc.lut, kc.lut, max.threads, outdir) {
+  dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+  Kc_out <- paste("Output/Kc/", tb[rownum,4], ".tif", sep="")
+  index = kc.lut[i,]
+  kc.list <- c()
+  for (j in seq_along(index[-c(1:3)])){
+    day.path <- paste0("output/tmp/", index[j], ".tif")
+    r <- calc(brick(lc.path)[[as.numeric(index["index"])]], 
+             fun=function(cropmask){cropmask * as.numeric(index[j])}, 
+             format = "GTiff", prj = TRUE, progress = "text", 
+             datatype = "INT1U", overwrite = TRUE, 
+             filename = paste0("output/tmp/", index[j], ".tif"))
+    kc.list <- c(kc.list, day.path)
+  }
+  kc.brick <- brick(kc.list,format = "GTiff", prj = TRUE, progress = "text", 
+                    datatype = "INT1U", overwrite = TRUE, 
+                    filename = paste0(outdir, dailyKc["cdl_name"], ".tif"),
+                    options="INTERLEAVE=BAND")
+  print(paste0("Writing: ", outdir))
+}
+
+# Just running calc bare with one crop (producing 365 layers)
+# Halted after 1% -> 9min (54)
+# = 1.5 hrs / crop
+# * 47 crops = 3 days/yr
+# * 10 yrs = 1 month LOL
+# Using 10 threads, should be able to cut down to 3 days calc time
+calc(brick(lc.path)[[as.numeric(dailyKc["index"])]], 
+             fun=function(cropmask){cropmask * as.numeric(dailyKc[-c(1:3)])}, 
+             format = "GTiff", prj = TRUE, progress = "text", 
+             datatype = "INT1U", overwrite = TRUE, 
+             filename = paste0(outdir, dailyKc["cdl_name"], ".tif"),
+             options="INTERLEAVE=BAND", forceapply = TRUE)
+
+# Pulling values to memory <1 min
+v <- getValues(testr)
+# Assigning values in memory 11.5 min and 40GB
+v[!is.na(v)] <- dailyKc[1]
+# Assigning values to everything <2 seconds
+testr1 <- setValues(testr, NA)
+```
+
+# Upscaling and reprojecting data
+
+The ETo dataset from *Spatial CIMIS* needs to be upscaled and reprojected in order to evaluate the water balance equation on each 30-m grid cell.
+
+10 years of observations comprise approximately 3650 raster files. After reducing the bit depth^[From 32-bit float to 16-bit unsigned int] of the ETo rasters, we have a few options:
+
+* Use `raster::projectRaster` to project to WGS-84 lat/lon and upscale to ~30m, then use `raster::intersect` to clip to the region of interest.
+* Use `gdalwarp` from `GDAL` to perform this all in one shot
+
+When used with the correct parameters, I was able to complete the operation using `gdalwarp` with a runtime that was 4% of `projectRaster` (not even counting the time required for `intersect`). On a single thread, this was ~60 seconds (with LZW compression) versus over 25 minutes.
+
+**NOTE: THIS IS A HACK.** We using `system()` to call `gdalwarp` directly as a system command. *This is suboptimal and can introduce security vulnerabilities as bad as arbitrary code execution*.
+
+`gdalUtils` exists as a wrapper for different `GDAL` utilities, however it is unmaintained, and it still uses `system()`, albeit in a much safer way.
+## TODO: Find a better method.
+
+## `gdalwarp` tuning notes
+
+85 sec with -multi flag, noclip 4.5 GB
+180 sec with -multi, noclip, lzw ~3 GB
+80 sec on SSD with -multi flag. Still no signs of CPU being maxed. Trippling ram doesn't make a difference.
+
+50-60 sec with shapefile clip on ssd
+no change forcing GDAL_NUM_THREADS=7. Still only one-two threads are used
+50 sec without multi enabled lol
+
+The best command is as follows:
+>     gdalwarp -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -cutline cb_2014_CA_5m.shp -co "COMPRESS=LZW" -co "PREDICTOR=2" --config GDAL_CACHEMAX 2000 -wm 2000 2007-01-01.tif cimis160101final.tif
+
+```{r}
+# Use this command to check your GDAL version
+system(paste0(shQuote("C:/OSGeo4W64/bin/gdalinfo"), " --version"), intern = TRUE)
+
+# This is the same command turned into a system call:
+system(paste0(shQuote("C:/OSGeo4W64/bin/gdalwarp.exe"), " -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000 --config GDAL_DATA ", shQuote("C:/OSGeo4W64/share/gdal"), " -cutline output/cb_2014_CA_5m.shp output/2007-01-01.tif output/cimis160101final2.tif"), intern = TRUE)
+```
+## Project ETo using `raster::projectRaster`
+Not used, this ended up being too slow
+```{r, eval=FALSE, include=FALSE}
+project_eto <- function(abs_path, source, product_name) {
+  dir.create(paste0("output/cleaned_inputs/", source, "_WGS84_30m/"), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cleaned_inputs/", source, "_WGS84_30m/", product_name, ".tif")
+  projectRaster(raster(abs_path), crs = CRS("+init=epsg:4326"), res = c(0.0003258984,0.0003259050), 
+           method = "bilinear", filename = outpath, format = "GTiff", 
+           prj = TRUE, progress = "text", datatype = "INT2U", overwrite = TRUE)
+}
+
+cl <- makeCluster(min((detectCores() - 1), nrow(eto.table)), outfile = "debug.txt")
+clusterExport(cl, list("lc.table", "project_cdl"))
+clusterEvalQ(cl,library(raster))
+parRapply(cl, lc.table,  
+       function(x) 
+         project_cdl(lc.table, x["abs_path"], x["source"], x["product_name"]))
+stopCluster(cl)
+```
+
+Using `raster::resample` would also be an option, if the CRS's aligned already.
+```{r}
+#anom.table = makeAnomtable(lc.table)
+
+# Upscale with nearest neighbor interpolation (to preserve categorical variable)
+# to match resolution of most recent CDL (56 meters)
+resample_eto <- function(abs_path, eto.crs, param_path, source, date) {
+  dir.create(paste0("output/cleaned_inputs/", source, "_NAD83_30m/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cleaned_inputs/", source, "_NAD83_30m/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
+  resample(raster(abs_path, crs = eto.crs), raster(param_path), 
+           method = "ngb", filename = outpath, format = "GTiff", 
+           progress = "text", datatype = "INT1U", overwrite = TRUE)
+}
+
+apply(eto.table[1,],1,function(x) 
+         resample_eto(x["abs_path"], eto.crs, "input/CDL_CA_NAD83/CDL_2016_06.tif", x["source"], x["date"]))
+
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- min((detectCores() - 2), nrow(eto.table))
+clusterExport(cl, list("eto.table", "resample_cdl"))
+clusterEvalQ(cl,library(raster))
+parRapply(cl, eto.table,  
+       function(x) 
+         resample_eto(x["abs_path"], eto.table[["abs_path"]][nrow(eto.table)], x["source"], x["date"]))
+stopCluster(cl)
+```
+
+## Gdalwarp trials
+>     -te -124.4097 -114.1312 32.53416 42.00952
+
+>     gdalwarp -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -multi -overwrite -crop_to_cutline -cutline cb_2014_CA_5m.shp --config GDAL_CACHEMAX 1000 -wm 1000 2007-01-01.tif cimis160101cpd.tif
+
+>     gdalwarp -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -multi -overwrite -crop_to_cutline -cutline cb_2014_CA_5m.shp -co "GDAL_NUM_THREADS=7" --config GDAL_CACHEMAX 2000 -wm 2000 2007-01-01.tif cimis160101cpd.tif
+
+>     gdalwarp -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -multi -overwrite  --config GDAL_CACHEMAX 2000 -wm 2000 2007-01-01.tif cimis160101.tif
+
+>     gdalwarp -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -multi -overwrite  --config GDAL_CACHEMAX 500 -wm 500 -co "COMPRESS=LZW" 2007-01-01.tif cimis160101z.tif
+
+>     gdalwarp -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -cutline cb_2014_CA_5m.shp -co "COMPRESS=LZW" -co "PREDICTOR=2" --config GDAL_CACHEMAX 2000 -wm 2000 2007-01-01.tif cimis160101final.tif
+
+>     GDAL command being used: "C:\OSGeo4W64\bin\gdalwarp.exe" -crop_to_cutline  -overwrite  -tr 0.0003258984 0.000325905 -s_srs "EPSG:3310" -t_srs "EPSG:4326" -r "bilinear" -of "GTiff" -cutline "input/SHAPEFILES/cb_2014_CA_5m.shp" "output/2007-01-01.tif" "output/cimisfinalout.tif"
+
+```{r}
+
+#system(paste0(shQuote("C:/OSGeo4W64/bin/gdalwarp.exe"), " -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -cutline output/cb_2014_CA_5m.shp -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000 --config GDAL_DATA ", shQuote("C:/OSGeo4W64/share/gdal"), " output/2007-01-01.tif output/cimis160101final2.tif"), intern = TRUE)
+
+system(paste0(shQuote("C:/OSGeo4W64/bin/gdalwarp.exe"), " -s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000 --config GDAL_DATA ", shQuote("C:/OSGeo4W64/share/gdal"), " -cutline output/cb_2014_CA_5m.shp output/2007-01-01.tif output/cimis160101final2.tif"), intern = TRUE)
+
+system(paste0(shQuote("C:/OSGeo4W64/bin/gdalinfo"), " --version"), intern = TRUE)
+```
+
+# Match
+```{r}
+overlay(raster(abs_path), 
+        raster(lc_path), 
+        fun=function(lc.value, eto.value) {
+          return(
+            kc.lut[
+              match(lc.value,kc.lut[["value"]]),
+              as.character(day.of.year)] * 
+            eto.value
+            )
+          }, 
+        format = "GTiff", progress = "text", datatype = "INT4U", overwrite = TRUE, filename = outpath, forcefun = TRUE)
+```
+
+# Strategies for aggregration
+
+The general workflow in this step:
+1. Identify the cell #s within each region of interest (ROI)
+  -> Save result as raster
+
+2. For each ROI, mask/extract yearly LC data
+  + Then identify the cell #s according to each unique crop ID within each ROI.
+  -> Save results as rasters?
+
+3. For each ROI, mask/extract daily CWU/PPT acording to the cell #
+
+4. For each ROI, mask/extract yearly LC data 
+
+# 1. Extract the cell numbers that correspond to each county area and save
+```{r}
+tmpl <- raster(ppt.table[1,"abs_path"])
+county_cells <- cellFromPolygon(tmpl, ca_counties, weights = FALSE)
+names(county_cells) <- ca_counties$ABBREV
+dir.create(file.path("output/Rdata/county_cells"), showWarnings = FALSE)
+# Note: We add CA_ prefix to workaround the situation where you get 'CON.rds',
+# which is an invalid filename for windows :V
+for (entry in 1:length(county_cells)){
+  saveRDS(county_cells[[entry]], file = paste0("output/Rdata/county_cells/CA_", names(county_cells[entry]),'.rds'))
+}
+```
+
+# 
+
+```{r}
+r.day = raster("output/cwr_calcs/2008/2008-06-01.tif")
+r.zone = raster("output/cleaned_inputs/CDL_CA_WGS84_projected/2008/2008-01-01.tif")
+set <- readRDS("output/Rdata/county_cells/CA_MER.rds")
+
+test <- zonal(r.day[set], r.zone[set], fun = 'sum')
+```
+
+test <- rasterFromCells(r.day, set) # < 10 sec
+test[] <- r.day[test[]]             # 19 min for mcd
+test <- extract(r.day, set, 'simple') # 8min for mcd
+
+```{r```{r}
+Sys.time()
+test <- extract(r.day, set, 'simple') # 8min for mcd
+Sys.time()
+
+```
+
+# Merging lists of data frames
+
+```{r}
+# Works, but results in warning of duplicate column names
+Reduce(function(dtf1, dtf2) merge(dtf1, dtf2, by = "zone", all = TRUE), z)
+
+# Works but is not very readable, taken from SO
+Reduce((function() {counter = 1
+                    function(x, y) {
+                      counter <<- counter + 1
+                      d = merge(x, y, all = T, by = 'zone')
+                      setNames(d, c(head(names(d), -1), paste0('day.', counter)))
+                    }})(), z)
+
+# I ended up using cbind, since I don't need to merge on zones, since every entry contains
+# the same zones in the same order. So cbind is appropriate
+Reduce(function(dtf1, dtf2) cbind(dtf1, dtf2[,2]), z)
+```

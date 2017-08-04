@@ -1,0 +1,298 @@
+---
+title: "Preparation of zone sums for WF calculation"
+author: "asmtry"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+# Uncomment the following line to enable chunk caching.
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+
+pkgTest("tidyverse", "lubridate", "tools", "readr")
+```
+
+# Introduction
+
+In the previous step, we computed zonal sums for crop water demand and precipitation respectively. Each unique 
+zone was created as a pair of a county index and a landcover (i.e. crop) index. This worksheet unpairs the 
+zone index and recovers the crop and county information.
+
+`output/summaries/{cwr,ppt}_year.rds` contains the raw zone sums, stored as large `list`s, with each list
+representing a year of observations. Each daily observation is stored as a 2-D matrix, with one column 
+representing the zone indicies, and the other column representing the zone sums.
+
+Some landcover indices, represent regions that are dual-cropped. That is, for part of the year, the region 
+contains one crop, and for another part of the year, it contains a different crop. For these regions,
+we replace the dual-crop landcover index with the appropriate single-crop index. The lookup table for these
+substitutions is found in `output/tables/CDL_LUT_dualtagged.rds`.
+
+Crop and landcover index pairings are found in `output/tables/CDL_Kc_LUT_daily.rds`. Modeled crop indicies are found in `output/tables/CDL_Kc_LUT_daily.rds`.
+
+
+```{r importData}
+calc.dir <- "output/summaries"
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+cdl.table <- read_csv("input/TABLES/cdl_classes_all.csv")
+CDL.LUT.dual <- readRDS("output/tables/CDL_LUT_dualtagged.rds")
+```
+
+```{r prepareAnalysis_rds}
+calc.paths <- list.files(path=calc.dir, pattern=".(rds)$", full.names=T, recursive=TRUE)
+
+calc.table <- data.frame(
+  abs_path = calc.paths,
+  product_name = sapply(strsplit(basename(file_path_sans_ext(calc.paths)),"_"),'[[',1),
+  date = as.Date(sprintf("%s-01-01", sapply(strsplit(basename(file_path_sans_ext(calc.paths)),"_"),'[[',2)), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+## TODO: Add input validation logic
+rm(calc.dir, calc.paths)
+```
+
+# Split double-cropped categories into respective crops
+
+There are some categories that represent two crop's worth of CWU in a respective year. Setting aside the assumptions that we made for modeling this split CWU, we now must split the year depending on what we expect to be growing in the region on the particular day of year. We make use of `CDL_LUT_dualtagged`, a table that associates a dual-crop category with the expected crop for a given day-of-year.
+
+First, we prepare the look-up-table for the dual-crop categories. Second, we create a function that changes re-assigns a dual cropped zone to the appropriate planted crop depending on the day of year. We call this function in the following block.
+
+
+```{r}
+# SMALL HACK: Resolve for leap years by adding a 366'th day 
+#             that has crop parameters equal to the 365th
+# Instead of modeling Feb 29, we model Dec 31st twice
+# TODO: We can make this more accurate by modeling Feb 28th twice,
+#       or adding logic to extend the growing season by one day during leap years.
+#       Nevertheless, late December and February conditions are typically similar.
+CDL.LUT.dual <- cbind(CDL.LUT.dual,"366" = CDL.LUT.dual[["365"]])
+CDL.LUT.dual <- gather(CDL.LUT.dual, "day_of_year", "real_value", 3:368, -cdl_name, convert = TRUE)
+
+reassign_dualcrop <- function(crop, date) {
+  real_value <- left_join(data.frame("crop" = crop, "date" = yday(date)), CDL.LUT.dual, by = c("crop" = "value", "date" = "day_of_year"))[["real_value"]]
+  return(ifelse(is.na(real_value), crop, real_value))
+}
+```
+
+# Read in and prep files (`rds` import)
+
+TODO: This function was written before I moved everything north of `gather` (`Reduce` et al.) into the region-aggregation worksheet (`7.county-aggregations.Rmd`), When you re-generate the `.rds` files, remove the `Reduce()` and `szudzik_unpair()` logic from `assemble_zonesums`.
+
+There are a lot of entries to process in this chunk, but it can be done on a laptop. 
+Expect 4M entries to take a minute or two on a modern laptop (sandy bridge or newer, 8GB RAM or more).
+
+```{r assembleZonesums}
+assemble_zonesums <- function(calc.table, parameter){
+  calc.table <- calc.table[calc.table[["product_name"]] == parameter,]
+  master.table <- data.frame()
+  for (rownum in 1:nrow(calc.table)){
+  
+  master.table <- rbind(master.table,                          # Concat to placeholder dataframe
+    readRDS(calc.table[rownum,"abs_path"]) %>%                 # Read in list of daily zone-sums
+    map(as.data.frame) %>%                                     # Convert all entries in list from matrix to data.frame
+    Reduce(function(x, y) full_join(x, y, by = "zone"), .) %>% # Combine to data frame, each col is a day
+    {cbind(szudzik_unpair(.[,1]), .[,-1])} %>%                 # Unpair "zone" into "crop" and "county" and drop "zone"
+    `colnames<-`(c("crop", "county", seq(1,ncol(.)-2))) %>%    # Name wide dataframe: "crop", "county", day "1", ...
+    gather(date, zsum, -crop, -county) %>%                      # Gather into narrow table
+    mutate(date = as.Date(as.numeric(date) - 1, 
+                          origin = paste0(year(calc.table[rownum,"date"]),"-01-01"), 
+                          format="%Y-%m-%d"))) %>%             # Change day-of-year to date
+    mutate(crop = reassign_dualcrop(crop, date))               # Unpair dual-crop categories
+  }
+  return(master.table)
+}
+
+# WARNING: Hardcoded paths
+cwr.master <- assemble_zonesums(calc.table, "cwr")
+saveRDS(cwr.master, "output/cwr_master.rds")
+
+ppt.master <- assemble_zonesums(calc.table, "ppt")
+saveRDS(ppt.master, "output/ppt_master.rds")
+```
+
+Note that the line that uses `purrr::map()` could be replaced with:
+`lapply(., as.data.frame)`
+
+`TODO`: There are a few elements of the above logic that can be improved:
+* Rather than binding the individual daily counts into a wide table, then collapsing into key-value
+  pairs with `gather`, our data are *already* in key-value pairs from the previous step! (key = zone,
+  value = zonesum). Turning it into a wide table is convenient for labeling dates, but if we added,
+  some date metadata from the previous step, then we could use `dplyr:mutate()` to assign a date 
+  early on.
+
+# Clean zone sums to remove non-crop counts
+
+When we computed zone sums in the last step, we used the raw landcover rasters, which included land cover
+classifications that we were not interested in (urban, grassland, forest, shrubland, water). We are only
+interested in the landcover classifications that correspond to the crops that we modeled. There are other
+crop classifications present in the landcover raster that we did not model, due to a lack of information or
+otherwise.
+
+It would be useful to: 1. remove the non-crop landcover category zone sums, and 2. identify the crops that
+had a landcover classification, but were not modeled. In order to do this, we simply compare the unique
+landcover categories from our zone sum table (below, we're using the `cwr` table) to the crop categories
+in the crop coefficient lookup table (found in `output/tables/CDL_Kc_LUT_daily.rds`, wherein the crop 
+categories have already set to use the same index as the landcover categories).
+
+`TODO`: This logic should be moved to the kc-prep worksheet.
+`NOTE`: Some of these tests seem kind of silly, but they've saved me twice already. Tests are good.
+
+```{r}
+# List landuse-zones present in our zonesums that are NOT present in our crop model table
+# These zones are either other non-crop categories, or crops that we did not model
+(not.counted <- sort(unique(cwr.master$crop)[!(unique(cwr.master$crop) %in% kc.lut$value)]))
+
+# Test that the values that went into `not.counted` are the same for the ppt and cwr tables
+# Should be all TRUE, since the crop-zone layer was the same for both cwr and ppt aggregation
+stopifnot(
+  unique(cwr.master$crop)[!(unique(cwr.master$crop) %in% kc.lut$value)] == 
+  unique(ppt.master$crop)[!(unique(ppt.master$crop) %in% kc.lut$value)])
+
+# Test that the values in `not.counted` are in the list of landcover indicies NOT present in the kc table
+# This should also be TRUE, since the CDL table contains the metadata for all of the land-use-zones
+# However, this CDL table also contains many NA entries that are simply not present in the CDL raster at all
+# TODO: Remove or something, this is superfluous and confusing
+stopifnot(
+  not.counted %in% unique(cdl.table[["VALUE"]])[!(unique(cdl.table[["VALUE"]]) %in% kc.lut$value)])
+
+# Subset cdl.table by not.counted so that we can see the description name, and reassgn to not.couted
+not.counted <- cdl.table[cdl.table[["VALUE"]] %in% not.counted,]
+
+# Remove these values from both datasets
+# WARNING: Hardcoded paths
+cwr.master <- cwr.master %>%
+  filter(!(crop %in% not.counted[["VALUE"]])) %>%
+  write_rds("output/cwr_master_cleaned.rds", compress = "gz")
+ppt.master <- ppt.master %>%
+  filter(!(crop %in% not.counted[["VALUE"]])) %>%
+  write_rds("output/ppt_master_cleaned.rds", compress = "gz")
+
+# Check that the values were removed.
+# Now, there should not be any zonesums present that are not in our lookup table
+# Should be TRUE
+stopifnot(
+  is_empty(sort(unique(cwr.master[['crop']])[!(unique(cwr.master[['crop']]) %in% kc.lut[['value']])])))
+```
+
+Crops present in dataset but not modeled in our analysis are as follows
+(after removing non-irrigated-crop landcover categories):
+
+```{r}
+(not.counted <- 
+   not.counted[not.counted[["VALUE"]] %in% 
+                 c(5, 26, 27, 31, 38, 71, 74, 231, 232, 233, 234, 238, 242, 244, 247, 250),])
+# WARNING: Hardcoded path
+write.csv(not.counted, file = "output/excluded_crops.csv")
+```
+
+# Convert raw values into volumes
+## Reverse scaling factors
+
+For different reasons, we applied multiplication factors to individual cell values in order to avoid
+working with floting point values (wikipedia actually has an article on this if you want to learn more
+https://en.wikipedia.org/wiki/Scale_factor_%28computer_science%29). Now would be a good time to undo
+those earlier scaling factors before we are unable to (ie. once we start adding and subtracting terms).
+
+We applied scaling factors of 100 to the evapotranspiration and precipitation rasters, and to the crop 
+coefficients. If $z_{1}$ is our cumulative scaling factor for *ET*:
+
+$$
+\begin{aligned}
+\textrm{CWR} &\approx \textrm{ETo} \times \textrm{Kc} \\
+\textrm{CWR} \times z_1 &= (100 \cdot \textrm{ETo}) \times (100 \cdot \textrm{Kc}) \\
+\hline
+z_1 &= (100 \times  100) = 100^2 \\
+\end{aligned}
+$$
+
+Likewise, our scaling factor for *PPT* ($z_{2}$) is simply:
+
+$$
+\begin{aligned}
+\textrm{ppt} \times z_2 &= \textrm{ppt} \times 100\\
+\hline
+z &= 100 \\
+\end{aligned}
+$$
+
+`TODO`: I'd like to figure out a more elegant and automated way of keeping track of these scaling factors.
+
+```{r}
+# WARNING: Hardcoded scaling factors
+z1 = 100*100
+z2 = 100
+
+cwr.master <- cwr.master %>%
+  mutate(zsum = zsum/z1)
+
+ppt.master <- ppt.master %>%
+  mutate(zsum = zsum/z2)
+```
+
+## Convert depths into volumes
+
+`{cwr,ppt}.master` both represent the sum of all of the daily depths of precipitation and crop 
+evapotransporation 'observed' in all of the grid cells of each zone. We can turn this value into an actual
+volume of water by multiplying the depth of water in each cell by the area of each cell. Since we use a
+uniform grid for the entire state (!!! see below), each cell has the same area. There are a few ways to
+think of the following operation:
+
+1. Dimensional analysis: wherein you multiply depths of ET by a cell-conversion-factor
+$$
+x\ \textrm{mm ET} \times \frac{30*30\ \textrm(m^2)}{cell} \times \frac{\textrm{m}}{1000 \ \textrm{mm}}= \frac{0.9 \cdot x\ m^3 ET}{cell}
+$$
+2. Distribution: wherein we perform the above operation on each cell. Multiplying this cell-conversion-factor
+by a zone sum is the same as multiplying every cell by the conversion factor, and summing the cells. If our
+coversion factor is $y$, and we have cells $a$ through $d$ in a particular zone, then:
+
+$$
+(z\cdot a + z\cdot b + z\cdot c + z\cdot d) = z\cdot\underbrace{(a + b + c + d)}_{zone\ sum}
+$$
+
+`WARNING/TODO`: Early on, we made a simplifying assumption regarding the grid used to model california. 
+This means that the grids in the northern parts of the state over-estimate how much water precipitated/
+transpired. This can be fixed with a more appropriate choice of map projection.
+
+```{r}
+xy.res <- 30
+z.unit <- 0.001 #Units are in milimeters = 0.001 meters
+
+cwr.master <- cwr.master %>%
+  mutate(vol = zsum * (xy.res^2) * z.unit)
+
+ppt.master <- ppt.master %>%
+  mutate(vol = zsum * (xy.res^2) * z.unit)
+```
+
+# Compute IRW and Green-water ET
+
+In order to partition the water footprint into a rain-fed and irrigated water component, we first need to calculate
+the irrigation water requirement.
+
+```{r}
+# We don't have PPT observations for the year of 2016, so let's drop them from the CWR table
+cwr.master <- cwr.master %>%
+  filter(date < as.Date("2016-01-01")) 
+
+# WARNING: Hardcoded path
+cwu.master <- cwr.master %>%
+  select(crop, county, date) %>%
+  mutate(cwr = cwr.master[["vol"]]) %>%
+  mutate(ppt = ppt.master[["vol"]]) %>%
+  mutate(et.b = pmax(0,(`cwr`-`ppt`))) %>%
+  mutate(et.g = pmin(cwr,ppt)) %>%
+  write_rds("output/cwu_master.rds", compress = "gz")
+```
+
+
+
+
+
+
+

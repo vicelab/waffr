@@ -1,0 +1,32 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/Kc.R")
+source("R/eto.R")
+
+pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
+rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+```
+
+Tests on `z.table`. Requires `kc,lut`.
+Where `z.table` are the daily zone sums for a given year.
+
+```{r}
+x <- unique(z.table$crop)[!(unique(z.table$crop) %in% kc.lut$value)]
+z.sub <- z.table[z.table$crop %in% x,]
+unique(z.sub$crop) == x
+rowSums(z.sub[,-c(1,2)])
+```
+

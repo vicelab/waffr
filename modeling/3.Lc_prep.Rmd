@@ -1,0 +1,372 @@
+---
+title: "3.Lc_prep"
+author: "asmtry"
+date: "February 17, 2017"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = '../', warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+source("R/eto.R")
+
+pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
+rasterOptions(progress = "text", tmpdir = "D:/lbooth/tmp", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+```
+
+There are different export options in the  USDA, NASS, CropScape and Cropland Data Layers tool. 
+Users can export subsets of the national data set under different regional masks, such as state
+boundaries, however all inherit the default `WGS 84 / Lon Lat` CRS, reproduced below as OGC WKT:
+
+>     GEOGCS["WGS 84",
+>         DATUM["WGS_1984",
+>             SPHEROID["WGS 84",6378137,298.257223563,
+>                 AUTHORITY["EPSG","7030"]],
+>             AUTHORITY["EPSG","6326"]],
+>         PRIMEM["Greenwich",0,
+>             AUTHORITY["EPSG","8901"]],
+>         UNIT["degree",0.0174532925199433,
+>             AUTHORITY["EPSG","9122"]],
+>         AUTHORITY["EPSG","4326"]]
+
+```{r loadData}
+# ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
+# ca_boundary <- readOGR("input/MAPS/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
+ca_boundary.path <- "Input/SHAPEFILES/cb_2014_CA_5m.shp"
+lc.dir <- "input/CDL_CA_WGS84"
+# equal to CRS("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs")
+lc.crs <- CRS("+init=epsg:4326")
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+kc.lut <- cbind(index = 1:nrow(kc.lut), kc.lut)
+```
+
+# 1. Collect landcover rasters and inspect
+
+First we collect all of the landcover rasters in our input directory and organize them into a table with relevant metadata, e.g. resolution and extent. Rasters are tagged as **anomalous** if their extent or resolution is different from the most common values of the group (criteria `mode`). 
+```{r prepareAnalysis}
+# TODO: Generalize as function
+lc.paths <- list.files(path=lc.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+lc.table <- data.frame(
+  abs_path = lc.paths,
+  source = sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',2),
+  product_name = sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',4),
+  date = as.Date(sprintf("%s-01-01",regmatches(lc.paths,regexpr("(?<=CA_WGS84\\/CDL_)(.{4})(?=_clip)",lc.paths, perl=TRUE))), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+# HACK: Clean up ugly product name
+
+lc.table[["product_name"]] <- paste0("CDL_", 2007:2016)
+
+# Tag (x,y)[min,max,res], ncell, and nlayers if applicable
+lc.table <- rtTagParam(lc.table)
+# Tag anomalous parameters according to metadata parameters specified
+lc.table["anoml"] <- tagAnomalous(lc.table, c("xmin", "xmax", "ymin", "ymax", "ncell", "xres", "yres"), modal)
+rm(lc.paths)
+```
+
+# 2. Clean anomalous rasters and re-inspect
+
+## 2.1 Upscale coarse landcover rasters
+At this point, we visually inspect anom.indicies and perform manual cleaning depending on what the problem is. For CDL, the resolution of older products is 56, so we must upscale to match the later years. 
+**NOTE:** Here, the criterion for cleaning is `anoml == TRUE`, since there are no other anomalous features, but this probably won't be the same for different data sources!
+
+`resample_cdl` is a function that resamples each raster that you feed into it to match the dimensions of *the last raster in the landcover file table*. It can be run sequentially on one thread (commented out below), or in parallel on multiple threads using `parallel`.
+```{r dataCleaning}
+#anom.table = makeAnomtable(lc.table)
+
+# Upscale with nearest neighbor interpolation (to preserve categorical variable)
+# to match resolution of most recent CDL (56 meters)
+resample_cdl <- function(lc.table, abs_path, source, product_name) {
+  dir.create(paste0("output/cleaned_inputs/", source, "_30m/"), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cleaned_inputs/", source, "_30m/", product_name, ".tif")
+  resample(raster(abs_path), raster(lc.table[["abs_path"]][nrow(lc.table)]), 
+           method = "ngb", filename = outpath, format = "GTiff", 
+           prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+}
+
+# TODO: Figure out why apply returns extra row, creating NA directory
+# Non parallel version
+# apply(lc.table[lc.table["xres"] == 56,], 1, 
+#       function(x) 
+#         resample_cdl(lc.table, x["abs_path"], x["source"], x["product_name"]))
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(min((detectCores() - 1), sum(lc.table["anoml"] == TRUE)))
+clusterExport(cl, list("lc.table", "resample_cdl"))
+clusterEvalQ(cl,library(raster))
+parRapply(cl, lc.table[lc.table["anoml"] == TRUE,],  
+       function(x) 
+         resample_cdl(lc.table, x["abs_path"], x["source"], x["product_name"]))
+stopCluster(cl)
+```
+
+```{r}
+project_cdl <- function(lc.table, abs_path, source, product_name) {
+  dir.create(paste0("output/cleaned_inputs/", source, "_WGS84_30m/"), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cleaned_inputs/", source, "_WGS84_30m/", product_name, ".tif")
+  projectRaster(raster(abs_path), crs = CRS("+init=epsg:4326"), 
+           method = "ngb", filename = outpath, format = "GTiff", 
+           prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
+}
+
+cl <- makeCluster(min((detectCores() - 1), nrow(lc.table)), outfile = "debug.txt")
+clusterExport(cl, list("lc.table", "project_cdl"))
+clusterEvalQ(cl,library(raster))
+parRapply(cl, lc.table,  
+       function(x) 
+         project_cdl(lc.table, x["abs_path"], x["source"], x["product_name"]))
+stopCluster(cl)
+```
+
+
+## 2.2 Import and re-inspect upscaled rasters
+```{r loadCleaned}
+# Load cleaned files into file table
+# TODO: DRY
+lc.paths.cleaned <- list.files(path="output/cleaned_inputs/CDL_CA_WGS84_30m", pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+# TODO: remove hardcoded gsub
+lc.table.cleaned <- data.frame(
+  abs_path = lc.paths.cleaned,
+  source =  gsub('.{4}$', '', sapply(strsplit(file_path_sans_ext(lc.paths.cleaned),"/"),'[[',3)),
+  product_name = sapply(strsplit(file_path_sans_ext(lc.paths.cleaned),"/"),'[[',4),
+  date = as.Date(sprintf("%s-01-01",regmatches(lc.paths.cleaned,regexpr("(?<=CA_WGS84_30m\\/CDL_)(.*)(?=.tif)",lc.paths.cleaned, perl=TRUE))), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+# Merge cleaned into file table and redo checks
+# TODO: DRY
+# TODO: Add test to ensure that all of "anoml" column == FALSE
+lc.table[lc.table[["date"]] %in% lc.table.cleaned[["date"]],] <- lc.table.cleaned[lc.table.cleaned[["date"]] %in% lc.table[["date"]],]
+
+# Tag (x,y)[min,max,res], ncell, and nlayers if applicable
+lc.table <- rtTagParam(lc.table)
+# Tag anomalous parameters according to metadata parameters specified
+lc.table["anoml"] <- tagAnomalous(lc.table, c("xmin", "xmax", "ymin", "ymax", "ncell", "xres", "yres"), modal)
+
+rm(lc.paths.cleaned, lc.table.cleaned)
+```
+
+## 2.3 Warp Lc
+TODO Why do we use `gdalwarp` here again?
+```{r, eval=FALSE, include=FALSE}
+# This is a test run of the function to be applied to make sure that it works as expected
+gdalwarp_wrapper("C:/OSGeo4W64/bin/gdalwarp.exe", "C:/OSGeo4W64/share/gdal",
+                 "-s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+                 ca_boundary.path, eto.table.scaled[1,1], "output/testout.tif")
+```
+
+```{r}
+warp_lc <- function(abs_path, cut.shapefile, source, date) {
+  dir.create(paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
+  gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
+                 "-s_srs EPSG:4326 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r near -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+                 cut.shapefile, abs_path, outpath)
+}
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(1, outfile = "debug.txt")
+clusterExport(cl, list("lc.table", "warp_lc", "ca_boundary.path", "gdalwarp_wrapper"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+parRapply(cl, lc.table,  
+       function(x) 
+         warp_lc(x[["abs_path"]], ca_boundary.path, x[["source"]], x[["date"]]))
+stopCluster(cl)
+```
+
+# 3 Create per-crop landcover raster masks
+
+At this point, we have a few options:
+1. Re-class the entire landcover rasters according to our Kc lookup table.
+2. Subset the landcover rasters by crop and reclass each according to the Kc lookup table
+
+Option 1 would produce the least intermediate files, however option 2 is the most performant^[This can be explained more rigorously]. This way, we produce crop masks early on in the workflow, and we can restrict later analysis routines to selected crops of interest. Finally, there is not much of a filesize penalty due to GeoTIFF compression^[This can also be explained more rigorously].
+
+`separate_lc` accepts entries from the landcover table and splits each raster into multiple layers by crop type, where values are either 1 or 0. The resultant multi-layer raster is saved as a GeoTiff interleaved by layer (band). The operation can be run sequentially on one thread (commented out below), or in parallel on multiple threads using `parallel`.
+
+### Benchmark
+`parRapply` takes ~16 hrs on TS-03 for 10 files on TS-03 with `ifelse(x == index[["value"]],1,NA)` heurestic.
+`parRapply` takes <8 hrs on TS-03 for 10 files on TS-03 with `x == index[["value"]]` heurestic.
+
+```{r separateLandcover}
+# TODO: Move function to lc.R
+separate_lc <- function(lc.table, abs_path, source, product_name, date, index) {
+  dir.create(paste0("output/intermediaries/lc_yearBricks/", source, "/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/intermediaries/lc_yearBricks/", source, "/", year(date), "/", product_name, ".tif")
+  
+  calc(raster(abs_path), fun=function(x){ifelse(x == index[["value"]],1,NA)}, 
+       format = "GTiff", prj = TRUE, progress = "text", 
+       datatype = "INT1U", overwrite = TRUE, filename = outpath,
+       options="INTERLEAVE=BAND", forceapply = TRUE, bylayer = TRUE, suffix = 'numbers')
+}
+
+# apply(lc.table, 1,
+#        function(x)
+#          separate_lc(lc.table, x["abs_path"], x["source"], x["product_name"], kc.index))
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(min((detectCores() - 1), nrow(lc.table)), outfile = "debug.txt")
+clusterExport(cl, list("lc.table", "kc.lut", "separate_lc"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE))
+parRapply(cl, lc.table, 
+       function(x) 
+         separate_lc(lc.table, x[["abs_path"]], x[["source"]], x[["product_name"]], x[["date"]], kc.lut))
+stopCluster(cl)
+```
+
+# 4 Create per crop-year crop coefficient layers [NOT USED]
+
+```{r loadMasked}
+# Load cleaned files into file table
+# TODO: DRY
+lc.paths.bricked <- list.files(path="output/intermediaries/lc_yearBricks/CDL_CA_WGS84_30m", pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+# TODO: remove hardcoded gsub
+lc.table.brick <- data.frame(
+  abs_path = lc.paths.bricked,
+  source =  gsub('.{4}$', '', sapply(strsplit(file_path_sans_ext(lc.paths.bricked),"/"),'[[',4)),
+  product_name = sapply(strsplit(file_path_sans_ext(lc.paths.bricked),"/"),'[[',5),
+  date = as.Date(sprintf("%s-01-01",regmatches(lc.paths.bricked,regexpr("(?<=CA_WGS84\\/CDL_)(.*)(?=.tif)", lc.paths.bricked, perl=TRUE))), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+# Merge cleaned into file table and redo checks
+# TODO: DRY
+# TODO: Add test to ensure that all of "anoml" column == FALSE
+# Tag (x,y)[min,max,res], ncell, and nlayers if applicable
+lc.table.brick <- rtTagParam(lc.table.brick)
+# Tag anomalous parameters according to metadata parameters specified
+lc.table.brick["anoml"] <- tagAnomalous(lc.table.brick, c("xmin", "xmax", "ymin", "ymax", "ncell", "xres", "yres", "nlayers"), modal)
+
+rm(lc.paths.bricked)
+```
+
+In this step, there are several iterations that must be performed:
+1. Each year
+2. Each crop
+3. Each day
+
+The first two can be aggregrated into one counter, as crops are arranged in yearly `brick`s. The third can be performed over entries in the Kc lookup table, as there is one entry per day.
+
+This is probably also an embarassingly parallel problem^[is it?], as we can divvy up operations by year and by crop (and by day even). However, this creates the potential for hundreds of thousands of simultaneous operations, and since we will be reducing the data into daily bricks by crop-year, there is the potential for some disk I/O penalty. There may be a large opportunity for optimization at this point.
+
+As a best-guess tradeoff between parallelization and saturating our resources, let's place a limit of 16 parallel operations, which would be able to process all 47 cropcover types in 3 passes per year. A surprising note, the vectorized approach using `calc` and `forceapply = TRUE` actually takes far, far longer (>14 hrs for one year) than the method with `for` loops.
+
+`class_kc` is a function that accepts a `rasterBrick` of landcover masks, each layer representing a different land cover class, with cell values of 0 or 1 identifying if the given pixel belongs to a class or not. It produces a daily `rasterBrick` of Kc values for each crop. It accepts the following parameters:
+* `lc.path` (chr) the absolute path of the landcover `rasterBrick` to be processed.
+* `kc.lut` (data frame) a data frame corresponding to the Kc-landcover lookup table. **IMPORTANT:** The order of crops in `kc.lut` must match the order of landcover masks in the landcover `brick`. From a first inspection, it seems that `raster::brick` is unable to assign or retrieve band names from a multi-band `GeoTiff` file^[TODO: Find an alternate solution].
+* `max.threads` (num) that defines the maximum number of threads permitted for calculation.
+* `out.dir`, (chr) the path where the raster bricks should be saved (created if necessary).
+
+
+```{r}
+year <- 2016
+lc.path <- paste0("output/intermediaries/lc_yearBricks/CDL_CA_WGS84/CDL_", year, "_06.tif")
+dir.create(paste0("output/kc_stacks/", year, "/"), recursive = TRUE, showWarnings = FALSE)
+outdir <- paste0("output/kc_stacks/", year, "/")
+dailyKc <- kc.lut[1,-c(1:3)]
+testr <- brick(lc.path)[[1]]
+# > freq(testr)
+# 264 seconds
+#      value     count
+# [1,]     1    784270
+# [2,]    NA 953294290
+
+# Bare function
+calc(brick(lc.path)[[as.numeric(dailyKc["index"])]], 
+             fun=function(cropmask){cropmask * as.numeric(dailyKc[-c(1:3)])}, 
+             format = "GTiff", prj = TRUE, progress = "text", 
+             datatype = "INT1U", overwrite = TRUE, 
+             filename = paste0(outdir, dailyKc["cdl_name"], ".tif"),
+             options="INTERLEAVE=BAND", forceapply = TRUE)
+
+# Time to run in memory
+v[!is.na(v)] <- dailyKc[1]
+
+# Essential command
+testr[!is.na(testr)] <- dailyKc[1]
+
+# Using lapply
+testout <- brick(lapply(1:365, function(x) testr[!is.na(testr)] <- dailyKc[x]))
+
+
+# Using simple loop
+for (day in 1:365){
+  testr[!is.na(testr)] <- dailyKc[day]
+}
+
+# Apply "loop"
+apply(lc.table, 1, 
+      function(x) 
+        separate_lc(lc.table, x["abs_path"], x["source"], x["product_name"], kc.index))
+
+
+class_kc_vectorized <- function(lc.path, kc.lut, kc.lut, max.threads, outdir) {
+  dir.create(out.dir, recursive = TRUE, showWarnings = FALSE)
+  apply(kc.lut[1:2,], 1, 
+      function(dailyKc) 
+        calc(brick(lc.path)[[as.numeric(dailyKc["index"])]], 
+             fun=function(cropmask){cropmask * as.numeric(dailyKc[-c(1:3)])}, 
+             format = "GTiff", prj = TRUE, progress = "text", 
+             datatype = "INT1U", overwrite = TRUE, 
+             filename = paste0(outdir, dailyKc["cdl_name"], ".tif"),
+             options="INTERLEAVE=BAND", forceapply = TRUE))
+}
+
+
+class_kc_parallel <- function(lc.path, kc.lut, max.threads, outdir) {
+  dir.create(out.dir, recursive = TRUE, showWarnings = FALSE)
+  # Make only as many clusters as necessary, bound by available cores
+  cl <- makeCluster(min((detectCores() - 1), max.threads))
+  clusterExport(cl, list("lc.path", "kc.lut", "kc.lut", "max.threads", "outdir"))
+  clusterEvalQ(cl, library(raster))
+  clusterEvalQ(cl, rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE))
+  
+  parRapply(cl, kc.lut[1:2,],
+          function(dailyKc) 
+            calc(brick(lc.path)[[as.numeric(dailyKc["index"])]], 
+                 fun=function(cropmask){cropmask * as.numeric(dailyKc[-c(1:3)])}, 
+                 format = "GTiff", prj = TRUE, progress = "text", 
+                 datatype = "INT1U", overwrite = TRUE, 
+                 filename = paste0(outdir, dailyKc["cdl_name"], ".tif"),
+                 options="INTERLEAVE=BAND", forceapply = TRUE))
+stopCluster(cl)
+}
+
+
+freq(test, value = NA, progress = "text", merge=TRUE)
+
+
+apply(kc.lut[1:3,3:ncol(kc.lut)],1, function(x) x)
+
+apply(kc.lut[1:3,3:ncol(kc.lut)], 1, 
+      function(x) 
+        class_kc(lc.table.brick, x["abs_path"], x["source"], x["product_name"], kc.index))
+```
+
+
+
+# TODO
+* Generalize `resampleCDL`.
+* Generalize `lc.table` routines
+* Refactor function calls using `%>%` for readability, *maybe...*
+** My fear is the difficulty of debugging 'deep pipes'
+** But since I'm using deeply-nested calls frequently, it's already 
+more difficult to debug than the traditional R style of repeated assignment
+** If you do, use `ensurer` + `%>%` for testing/debugging.
+* Write unit tests for landcover inputs
+* Add input sanity checks. Eg. is `lc.path` empty?

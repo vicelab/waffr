@@ -1,0 +1,455 @@
+---
+title: "Figures: 2008-2015 averages by crop"
+author: "asmtry"
+output:
+  html_document:
+    css: base.css
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
+        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+        "rgdal", "devtools")
+install_github("wilkox/ggfittext")
+install_github("wilkox/treemapify")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggfittext", "treemapify")
+ggplot2::theme_set(theme_bw())
+```
+## Import data
+
+`cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
+and the corresponding name and index number in the FAO Indicative Crop Classification (ICC 1.1).
+
+`roi.table` contains relations from the regions of interest used to aggregrate the WF, PPT, 
+and CWU calculations performed in steps 8-10. Here, the relation is the attribute table from a
+shapefile of California county political boundaries. Attributes include: county index, name, and
+corresponding DWR hydrologic region.
+
+`ca.counties` contains the shapefile, on which `roi.table` is based.
+
+`ca.hr` contains the shapefile of DWR hydrologic regions, for California.
+
+`wf.master.wyear` contains annual sums of cwr, ppt, etc, wf, and harvested tons/acres/USD 
+aggregrated by crop, county, and water year. It only includes the counties that have corresponding 
+entries in the County Ag Comissioners (CAC) annual yield reports. Counties that had modeled ag 
+production, without an accompanying entry in the CAC annual reports were omitted.
+
+`wf.master.cyear` contains the above, except aggregrated by calendar year (instead of water year). 
+This data set includes the extra year of 2007.
+
+`yield.master` contains all of the statistics reported by the CAC annual reports (production tons, 
+harvested acres, value in USD), for the modeled crops.
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+ca.hr <- readOGR("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
+wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
+wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+## Create some functions for commonly used summary statistics
+
+Typially in a boxplot, outliers are marked as values that fall outside of 1.5 times the interquartile range 
+avove and below the 25% and 75% quantiles. `is_extreme()` is a function that we define below, that applys the
+same criteria and returns TRUE if the value is a suspected outlier/extreme falue, and false otherwise.
+
+```{r summaryFuns}
+is_extreme <- function(series) {
+  #' Tags values in a series according to whether or not they would appear as oulier points
+  #` in a Tukey boxplot (values that lie outside of the H-spread.)
+  #` Specifically, these are values that are less or greater than the 1st and 3rd quartiles
+  #` plus 1.5 times the interquartile range.
+  #' @param series Vector of type numeric (int or double)
+  #' @return Vector of type logical, TRUE if the value is an outlier, FALSE if it is not
+  return(series < (quantile(series, 0.25) - (1.5 * IQR(series)) ) | series > (quantile(series, 0.75) + (1.5 * IQR(series)) ))
+}
+```
+
+## Clean erronious observations
+
+Here, we clean obviously erronious observations.
+
+I think the 2009 Riverside CAC survey severly under-reports the "Oats" category to the point that
+it makes the "Oats" water footprint blow up (several orders of magnitude higher than baseline, see
+the by-year summary notebook).
+
+```{r cleanData}
+wf.master.wyear <- wf.master.wyear %>%
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+```
+
+# C1: Average statewide water demand *for all* years, by crop
+
+Here, we sum all daily volumes of cwr, ppt, et, and wf by crop, over each calendar and water year.
+Then, we average all of the yearly sums, to produce an "average year" value, for each parameter.
+```{r calc1}
+wf.master.allcrop.cyear <- wf.master.cyear %>%
+  group_by(cdl.value, cdl.name, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  group_by(cdl.value, cdl.name) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
+  left_join(cdl.table %>% select(value,`FAO_shortgroup`),
+            by = c("cdl.value" = "value")) %>%
+  ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
+  `attr<-`("year_type", "calendar") %>%
+  `attr<-`("summary_type", "total")
+
+wf.master.allcrop.wyear <- wf.master.wyear %>%
+  group_by(cdl.value, cdl.name, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  group_by(cdl.value, cdl.name) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
+  left_join(cdl.table %>% select(value,`FAO_shortgroup`),
+            by = c("cdl.value" = "value")) %>%
+  ungroup() %>%
+  `attr<-`("year_type", "water") %>%
+  `attr<-`("summary_type", "total")
+```
+
+# P1: Average Blue WF vs Green WF, crop-wise
+Depending on the number of crops in your corpus, it may or may not make sense to visualize all crops
+simultaneously. Here, there are a handfull of crops at the extreme end of blue/green WF, that make
+it difficult to distinguish between the other crops.
+```{r plot1}
+# local({
+  # wfb_vs_wfg <- 
+    wf.master.allcrop.wyear %>%
+    # Mark top 3 wf.b_avg crops as outlier and tag either by cdl.name or NA
+    left_join(wf.master.allcrop.wyear %>% 
+                top_n(7, wf.b_avg) %>% 
+                select(`cdl.value`, outlier = `cdl.name`),
+              by = "cdl.value") %>%
+    ggplot() +
+    geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, color = cdl.name)) +
+    geom_label_repel(mapping = aes(x = wf.b_avg, y = wf.g_avg, label = outlier, fill = cdl.name), 
+                   color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                   point.padding = unit(0.5, "lines"), na.rm = TRUE, nudge_y = 51) +
+    guides(color = "none", fill = "none") +
+    labs(title = "Average, annual WF by crop for 2008 - 2015 water years",
+         subtitle = "Top 7 crops by Blue WF highlighted",
+         x = "Blue WF (m3/tonne)", y = "Green WF (m3/tonne)")
+
+  # etb_vs_etg <- 
+    wf.master.allcrop.wyear %>%
+    # Mark top 3 et.b_avg crops as outlier and tag either by cdl.name or NA
+    left_join(wf.master.allcrop.wyear %>% 
+                top_n(3, et.b_avg) %>% 
+                select(`cdl.value`, outlier = `cdl.name`),
+              by = "cdl.value") %>%
+    ggplot() +
+    geom_point(mapping = aes(x = et.b_avg, y = et.g_avg, color = cdl.name)) +
+    geom_label_repel(mapping = aes(x = et.b_avg, y = et.g_avg, label = outlier, fill = cdl.name), 
+                   color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                   point.padding = unit(0.5, "lines"), na.rm = TRUE, nudge_y = 51) +
+    guides(color = "none", fill = "none") +
+    labs(title = "Average, annual ET by crop for 2008 - 2015 water years",
+         subtitle = "Top 3 crops by Green ET highlighted",
+         x = "Blue ET (m3)", y = "Green ET (m3)")
+
+  # cwr_vs_ppt <- 
+    wf.master.allcrop.wyear %>%
+    # Mark top 3 et.b_avg crops as outlier and tag either by cdl.name or NA
+    left_join(wf.master.allcrop.wyear %>% 
+                top_n(3, cwr_avg) %>% 
+                select(`cdl.value`, outlier = `cdl.name`),
+              by = "cdl.value") %>%
+    ggplot() +
+    geom_point(mapping = aes(x = cwr_avg, y = ppt_avg, color = cdl.name)) +
+    geom_label_repel(mapping = aes(x = cwr_avg, y = ppt_avg, label = outlier, fill = cdl.name), 
+                   color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                   point.padding = unit(0.5, "lines"), na.rm = TRUE, nudge_y = 51) +
+    guides(color = "none", fill = "none") +
+    labs(title = "Average, annual CWR and PPT volumes by crop for 2008 - 2015 water years",
+         subtitle = "Top 3 crops by CWR highlighted",
+         x = "CWR (m3)", y = "PPT (m3)")
+
+  #plot_grid(arrangeGrob(wfb_vs_wfg, etb_vs_etg, ncol=1), nrow = 1)
+# })
+```
+
+# P2: Average Blue WF vs Green WF, crop-wise w/ FAO groups
+
+We can also group crops by a classification based on similarity. This can be taxonomic (related 
+to crop genotypic similarity), horticultural (related to the plant's cultivation), economic 
+(related to crop value or markets), or otherwise. 
+
+Let's color crops by the FAO Indicative Crop Classification (ICC 1.1), which groups crops 
+according to  growing cycle (row vs perennial), crop genus, and product type. Note: that the 
+ICC is still in active development, as of 2017.
+
+On the right, we use a log/log plot in order to examine the structure of crops on the low-end of WF,
+since a few, high-WF crops greately influence the scale.
+```{r plot2}
+local({
+  wfb_vs_wfg_icc <- wf.master.allcrop.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, color = FAO_shortgroup)) +
+    labs(title = "Average, annual ET by crop for 2008 - 2015 water years",
+         subtitle = "colored by FAO-ICC 1.1",
+         x = "Blue WF (m3/tonne)", y = "Green WF (m3/tonne)", color = "ICC 1.1") +
+    theme(legend.position = "none")
+  
+  wfb_vs_wfg_icc_log <- wf.master.allcrop.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, color = FAO_shortgroup)) +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(title = "Average, annual ET by crop for 2008 - 2015 water years",
+         subtitle = "(Log10 scales), colored FAO-ICC 1.1",
+         x = "Blue WF (m3/tonne)", y = "Green WF (m3/tonne)", color = "ICC 1.1") +
+    theme(legend.position = "none")
+
+  l1 <- get_legend(wfb_vs_wfg_icc + guides(fill = guide_legend()) + theme(legend.position="bottom"))
+  plot_grid(arrangeGrob(wfb_vs_wfg_icc, wfb_vs_wfg_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .2))
+})  
+```
+
+# P3: Average Blue WF vs Green WF, crop-wise w/ FAO groups and convex hull
+
+We can add convex hulls to see if there is any clustering of crops by the WF or ET metrics,
+by FAO-ICC group. Use `ggalt::geom_encircle()` for convex hulls.
+
+```{r plot3}
+local({
+  wfb_vs_wfg_icc <- wf.master.allcrop.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, color = FAO_shortgroup)) +
+    geom_encircle(mapping = aes(x = wf.b_avg, y = wf.g_avg, fill = FAO_shortgroup),alpha=0.3) +
+    labs(title = "Average, annual WF by crop",
+         subtitle = "08-15 WY, colored by FAO ICC 1.1",
+         x = "Blue WF (m3/tonne)", y = "Green WF (m3/tonne)", color = "FAO-ICC 1.1") +
+    theme(legend.position = "none")
+  
+  wfb_vs_wfg_icc_log <- wf.master.allcrop.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, color = FAO_shortgroup)) +
+    geom_encircle(mapping = aes(x = wf.b_avg, y = wf.g_avg, fill = FAO_shortgroup),alpha=0.3) +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(title = "Average, annual WF by crop",
+         subtitle = "(Log10 scales), 08-15 WY, colored by FAO ICC 1.1",
+         x = "Blue WF (m3/tonne)", y = "Green WF (m3/tonne)", color = "FAO-ICC 1.1") +
+    theme(legend.position = "none")
+
+  l1 <- get_legend(wfb_vs_wfg_icc + guides(fill = guide_legend()) + theme(legend.position="bottom"))
+  plot_grid(arrangeGrob(wfb_vs_wfg_icc, wfb_vs_wfg_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .2))
+})  
+```
+
+Still not particularly informative. There seems to be a strong 1:1 relationship between Blue WF and Green WF, which intuitively does not make very much sense. California grows lots of foods in regions that have nearly zero rainfall (Imperial county comes to mind.) I’d have to think about what is going on here.
+
+## P3.5 ET and CWU vs PPT
+Let’s take a look at overall crop water demand vs ppt, and blue/green ET.
+
+```{r plot3-5}
+local({
+  etb_vs_etg_icc_log <- wf.master.allcrop.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = et.b_avg, y = et.g_avg, color = FAO_shortgroup)) +
+    geom_encircle(mapping = aes(x = et.b_avg, y = et.g_avg, fill = FAO_shortgroup),alpha=0.3) +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(title = "Average, annual ET by crop",
+         subtitle = "(Log10 scales), 08-15 WY, colored by FAO ICC 1.1",
+         x = "Blue ET (m3)", y = "Green ET (m3)", color = "FAO-ICC 1.1") +
+    theme(legend.position = "none")
+  
+  cwu_vs_ppt_icc_log <- wf.master.allcrop.wyear %>%
+    ggplot() +
+    geom_point(mapping = aes(x = cwr_avg, y = ppt_avg, color = FAO_shortgroup)) +
+    geom_encircle(mapping = aes(x = cwr_avg, y = ppt_avg, fill = FAO_shortgroup),alpha=0.3) +
+    scale_x_log10() +
+    scale_y_log10() +
+    guides(color = "none") +
+    labs(title = "Average, annual CWU and precip.",
+         subtitle = "(Log10 scales), 08-15 WY, colored by FAO ICC 1.1",
+         x = "CWU (m3)", y = "PPT (m3)", color = "FAO-ICC 1.1") +
+    theme(legend.position = "none")
+
+  l1 <- get_legend(etb_vs_etg_icc_log + guides(fill = guide_legend()) + theme(legend.position="bottom"))
+  plot_grid(arrangeGrob(etb_vs_etg_icc_log, cwu_vs_ppt_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .2))
+})  
+```
+
+Since Green WF is directly related to precipitation, and Blue WF is directly related to the crop water requirement we would expect the plots to look similar, and in fact they do look like affine transformations of each other.
+
+# P4: Average Blue WF vs Green WF vs CWU, crop-wise
+
+What if we maintain the same groupings, but color (and size) by crop water requirement instead?
+
+```{r plot4}
+local({
+  wfb_wgf_cwu <- wf.master.allcrop.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, size = cwr_avg, color = cwr_avg)) +
+  scale_x_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  annotation_logticks() +
+  scale_color_viridis(option = "plasma") +
+  labs(x = "Average Blue WF (m3/tonne)", y = "Average Green WF (m3/tonne)", 
+       color = "Avg CWR \n(m3/yr)", size = "Avg CWR \n(m3/yr)") +
+  guides(size = "none") +
+  theme(axis.text.y = element_text(angle = 90), legend.position = "bottom")
+  
+  wfb_wgf_cwu_icc <- wf.master.allcrop.wyear %>%
+  mutate(outlier = ifelse(is_extreme(cwr_avg), cdl.name, NA)) %>%
+  mutate(funs(factor), outlier) %>%
+  ggplot() +
+  geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, size = cwr_avg, color = outlier)) +
+  geom_label_repel(mapping = aes(x = wf.b_avg, y = wf.g_avg, label = outlier, fill = outlier), 
+                   color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                   point.padding = unit(0.5, "lines"), na.rm = TRUE, nudge_x = -1)  +
+  scale_x_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  annotation_logticks() +
+  labs(x = "Average Blue WF (m3/tonne)", y = "Average Green WF (m3/tonne)", 
+       color = "Extreme \nCrops \n(for CWR)", size = "Avg CWR \n(m3/yr)") +
+  guides(fill = "none", color = "none") +
+  theme(axis.text.y = element_text(angle = 90), legend.position = "bottom")
+  
+  t1 <- ggdraw() + draw_label("Mean WF and CWR by crop for WY 08-15", fontface='bold')
+  plot_grid(t1, arrangeGrob(wfb_wgf_cwu, wfb_wgf_cwu_icc, nrow=1), ncol=1, rel_heights=c(0.1, 1))
+
+})
+```
+
+# P5: Treeplot, Blue WF vs CWU, crop-wise
+
+The contrast between WF and CWU is very apparent when visualized with a treemap. You can use the 
+`treemapify` extension to `ggplot2` to draw these treemaps. As of June 2017, `treemapify` is not 
+found in CRAN, and must be installed through `devtools` from github 
+([link][https://github.com/wilkox/treemapify].
+
+```{r plot5}
+wf.master.allcrop.wyear %>%
+  ggplot(mapping = aes(area = cwr_avg, fill = wf.b_avg, label = cdl.name)) +
+  geom_treemap() +
+  geom_treemap_text(fontface = "italic", colour = "white",
+                    place = "centre", grow = TRUE) +
+  scale_fill_viridis(trans = "log", option = "viridis", labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+  labs(title = "Mean Blue WF and CWR by crop for 2008 - 2015 water years",
+       subtitle = "(CWU expressed as proportional areas, Blue WF expressed log10 fill scale)",
+       fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
+  theme(legend.text=element_text(size=10),
+        legend.title=element_text(size=10))
+
+wf.master.allcrop.wyear %>%
+  ggplot(mapping = aes(area = cwr_avg, fill = wf.b_avg, 
+                     label = cdl.name, subgroup = FAO_shortgroup)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
+                             colour = "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
+  scale_fill_viridis(trans = "log", option = "viridis", labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+  labs(title = "Mean Blue WF and CWR by crop for 2008 - 2015 water years",
+       subtitle = "(CWU expressed as proportional areas, Blue WF expressed log10 fill scale)",
+       fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
+  theme(legend.text=element_text(size=10),
+        legend.title=element_text(size=10))
+
+  # l1 <- get_legend(bwf_cwu + guides(fill = guide_legend()) + theme(legend.position="bottom"))
+  # plot_grid(arrangeGrob(bwf_cwu, bwf_cwu_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .2))
+```
+
+# T1: Table, Average CWU (AF and TAF)
+
+The following is a tabulation the average CWU in acre-feet (AF) and thousand-acre-feet (TAF)
+for comparison to other tallies of statewide water use. Be aware that these values represent
+the *average* of yearly sums for each October-September period, from 2008-2015.
+
+```{r table1}
+# For displaying hundreds w/o scientific notation in html table
+options("scipen"=100, "digits"=4)
+# For fancy html tables
+options(knitr.table.format = "html")
+
+cwu.sum <- wf.master.allcrop.wyear %>%
+  select(crop = cdl.name, cu.m = cwr_avg) %>%
+  mutate(AF = (cu.m * 0.0008107)) %>%
+  mutate(TAF = (AF / 1000))
+cwu.sum %>%
+  bind_rows(cbind(crop = "Total", 
+                  cwu.sum %>% 
+                    summarize_at(vars(cu.m, AF, TAF), funs(sum)))) %>%
+  kable() %>%
+  kable_styling("striped", full_width = F) %>%
+  row_spec(nrow(cwu.sum)+1, bold = T)
+```
+
+## T1.5 Sortable table
+What follows is a sortable, interactive table (HTML output only):
+```{r table2}
+datatable(cwu.sum, class = 'cell-border stripe')
+```
+
+# Chunks not run
+## Total Blue WF ~ Green WF, crop-wise
+
+There are too many unique crops to produce a readable plot.
+```{r allcrops, eval=FALSE}
+ggplot(data = wf.master.allcrop.wyear) +
+  geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, color = cdl.name))
+```
+
+## ggplot as a function
+Preliminary start of a plotting function for shiny. May have to wait until tidyeval is implemented
+in ggplot if you want to use quosures consistently, otherwise use aes_string and pass parameters
+as quotes (not great).
+```{r ggfun, eval=FALSE}
+  # plot_vs <- function(data_source, x_var, y_var, color_var, topn_var, topn_num) {
+  # data_source %>%
+  #   # Mark top 3 wf.b_avg crops as outlier and tag either by cdl.name or NA
+  #   left_join(data_source %>% 
+  #               top_n(!!topn_num, !!topn_var) %>% 
+  #               select(`cdl.value`, outlier = `cdl.name`),
+  #             by = "cdl.value") %>%
+  #   ggplot() +
+  #   geom_point(mapping = aes(x = !!x_var, y = !!y_var, color = !!color_var)) +
+  #   geom_label_repel(mapping = aes(x = !!x_var, y = !!y_var, label = outlier, fill = !!color_var), 
+  #                  color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+  #                  point.padding = unit(0.5, "lines"), na.rm = TRUE, nudge_y = 51) +
+  #   guides(color = "none", fill = "none")
+  # }
+  # 
+  # wfb_vs_wfg <- plot_vs(wf.master.allcrop.cyear, quo(wf.b_avg), quo(wf.g_avg), quo(cdl.name), quo(wf.b_avg), quo(3))
+
+```
+
+
+## parameter labels as attributes
+I need to figure out how to store key-value pairs as an attribute (probably as a list, or
+named vector).
+```{r param.labs, eval=FALSE}
+param.labs <- c(
+  wf.b_avg = "Average Blue WF",
+  wf.g_avg = "Average Green WF")
+```
+

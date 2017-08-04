@@ -1,0 +1,67 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: html_document
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+source("R/eto.R")
+
+pkgTest("tidyverse", "lubridate", "tools")
+rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+```
+
+```{r importData}
+calc.dir <- "output/summaries"
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+cdl.table <- read.csv("input/TABLES/cdl_classes.csv")
+cwr.master <- readRDS("output/cwr_master_cleaned.rds")
+ppt.master <- readRDS("output/ppt_master_cleaned.rds")
+```
+
+# Plot Almond relative CWU for all years
+```{r }
+crop.year <- cwr.master %>%
+  group_by(crop, year = year(date)) %>%
+  summarise(total = sum(sum))
+
+ggplot(crop.year[crop.year[["crop"]] == crop.index,]) +
+  geom_line(aes(year, total)) + 
+  labs(title = paste0("Plot of ", kc.lut[kc.lut[["value"]] == 75,][["cdl_name"]], "for all years"))
+
+ggplot(crop.year[crop.year[["crop"]] == 36,]) +
+  geom_line(aes(year, total)) + 
+  labs(title = paste0("Plot of ", kc.lut[kc.lut[["value"]] == 36,][["cdl_name"]], "for all years"))
+
+year.total <- cwr.master %>%
+  group_by(year = year(date)) %>%
+  summarise(total = sum(sum))
+
+ggplot(year.total) +
+  geom_line(aes(year, total)) + 
+  labs(title = "CWU totals for all years")
+```
+
+```{r}
+
+for (c.item in crop.year[["crop"]]) {
+
+
+ggplot(crop.year[crop.year[["crop"]] == crop.index,]) +
+  geom_line(aes(year, total)) + 
+  labs(title = paste0("Plot of ", kc.lut[kc.lut[["value"]] == 75,][["cdl_name"]], "for all years"))
+}
+```
+
+

@@ -1,0 +1,344 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: html_document
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+This worksheet uses `tidyverse` packages, heavily.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+
+pkgTest("tidyverse", "rgdal", "lubridate", "tools")
+```
+
+# Meta-data (units)
+In our `YIELDS` directory, we inport county-level crop yield data, collected from the 
+County Agricultural Commissioners’ (USDA/NASS). Hereafter, this dataset will be referred to as `yield.master`,
+since this table contains yields, and the yields could be sourced from anywhere (not just USDA/NASS/CAC).
+
+The data used in this worksheet can be found at the following URL, (as of June 2017):
+https://www.nass.usda.gov/Statistics_by_State/California/Publications/AgComm/Detail/
+
+From the USDA/NASS PDF reports:
+> Values are recorded for all products grown during the calendar year, regardless of when they are marketed.
+
+From the USDA/NASS reports, *most* production units are expressed in mass units, specifically 
+(short) Tons US (2000 lbs). When tonnes (metric) are used in  NASS reorts, I've seen them explicitly 
+specified as 'metric tons'. Other production units include: "Lbs/LBS/lbs" (pounds US), "Cwt/CWT/cwt" 
+(hundredweight, aka 100 pounds US), "Col/COL/col" (colonies, for apiary pollination fees), 
+"Each/EACH/each" (units, for certin products such as bee nuclei, queen bees, and turkey eggs for hatching), 
+"Cord/CORD/cord" (volumetric unit for timber) and "Thou/THOU/thou" (thousands of units, for nursery plants).
+
+Area units are in *US survey acres*, based on the square survey foot (NBS Special Publication 447, NIST Handbook 44 - 2012). 
+Differences between the survey acre and the international acre are <2ppm (wikipedia::acre, NIST Handbook 44 - 2012). 
+When hectares are used in NASS reports, I've seen them explicitly specified as 'hectares'.
+
+Yield units are reported as (production mass)/(harvested acre). Specifically, yields are expresed as short tons per acre.
+
+All of the above♪ is also detailed in USDA/ERS Agricultural Handbook Number 697 *"Weights, Measures, and Conversion 
+Factors for Agricultural Commodities and Their Products"*. This document also provides conversion factors for unusual
+commodity weights and measures (eg. carton, bushel, sack, barrel, lug) that we (luckily) don't have to use.
+
+## CDL Quirks
+
+Some quirks that you may notice in the CDL data set:
+
+* Inconsistent capitalization in the `Unit` field (LBS vs Lbs vs lbs)
+* Typos in the `County` field ("State Total" vs "State Totals" and "San Luis Obisp" vs "San Luis Obispo")
+* Typos in the `Commodity Name` field ("CATTLE CALVES EXCLUDED UNSPECIFIE" vs "CATTLE CALVES EXCLUDED UNSPECIFIED"
+  and "NURSERY HORTICULTRAL SPECIMIN MIS" vs "NURSERY HORTICULTRAL SPECIMIN MISC." and others)
+
+## Import data and set constants
+
+```{r importData}
+yield.dir <- "input/YIELDS"
+kc.index <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")[,1:2]
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+cdl_nass <- read_csv("output/tables/CDL_NASS.csv")
+counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+counties.index <- counties@data %>%
+  mutate_all(as.character) %>%
+  type_convert
+```
+
+If you end up doing lots of unit conversions, it may make sense to use a dedicated library/package,
+but luckily, the harvested crops that we are interested in are only reported in US tons (short tons).
+It's easier for me to verify the calculations on paper if everything is in SI units, so let's define
+some conversion factors here, for later use.
+
+All conversion factors are from the USDA/ERS Agricultural Handbook Number 697 *"Weights, Measures, 
+and Conversion Factors for Agricultural Commodities and Their Products"*.
+
+I really like the `udunits2` and `units` packages, along with the UNIDATA library that they depend on. 
+```{r}
+# TODO: Use units/udunits2/UNIDATA
+# Short tons (US) to tonnes (metric tons)
+conv <- list( ton = list(ton = 1, kg = 907.18474, tonne = 0.90718474),
+              lb  = list(lb = 1, kg = 0.45359237, tonne = 0.00045359237),
+              cwt = list(cwt = 1, lb = 100, kg = 45.35924, tonne = 0.045359237)
+)
+```
+
+
+# Import and prepare yield and county data
+
+Note that by defailt, the attribute table is read with R data frame conventions, thatis, coercing to
+factors whenever possible. You can use `readr::type_convert` to run `readr`'s type-guessing logic on 
+existing data frames. 
+```{r prepareAnalysis_rds}
+yield.paths <- list.files(path=yield.dir, pattern=".(csv)$", full.names=T)
+
+yield.master <- do.call("rbind", lapply(yield.paths, read_csv, col_types = cols(`Harvested Acres` = col_number(), 
+        Value = col_number())))
+
+rm(yield.dir, yield.paths)
+
+# Make the `Units` column lowercase to make things consistent
+yield.master[["Unit"]] <- tolower(yield.master[["Unit"]])
+
+counties.index <- counties@data %>%
+  mutate_all(as.character) %>%
+  type_convert
+```
+
+# Explore unique values in harvest dataset
+
+## Unique crop categories
+Here, we create `common.crops`, which is a character vector of the crop names that have an entry in *all* of the 
+yearly crop reports. In other words, if there's a crop name category that is present in 2005-2011, but not present 
+in 2012, then we will ignore that particular crop. 
+
+We're only checking this becaue the length of the unique crop names differs from year to year, suggesting that 
+some categories are present some years, and some aren't present other years. That said, having an entry does not
+guarentee that there were any harvested acres that year. In other words, a year may have an entry for a crop that
+did not have any harvested acres (which, is expected).
+
+
+```{r prepCommonCrops_vis}
+# Calc number of unique crop categories each year
+yield.master %>%
+  group_by(Year) %>%
+  summarize(unique = length(unique(`Crop Name`)))
+
+# Find the crop categories that are present in all years
+# (Inner join across all categories)
+yield.master %>%
+  group_by(Year) %>%
+  distinct(`Crop Name`)
+```
+
+The key operation is `dplyr::intersect()` (find which members of "Crop Name" are in common) which can be thought of 
+as a SQL inner join. First, we produce a list of unique (`dplyr::distinct`) crop names by-year, then we intersect the 
+list of names (performing the inner join).
+
+```{r prepCommonCrops}
+# TODO: For fun, figure out how to do this using just one (compound) statement using dplyr::inner_join()
+common.crops <- yield.master %>%
+  group_by(Year) %>%
+  distinct(`Crop Name`) %>%
+  summarize(cropname = list(`Crop Name`)) %>%
+  select(cropname) %>%
+  lapply(function(x) {(x)})
+
+common.crops <- Reduce(intersect, common.crops[["cropname"]])
+all.crops <- unique(unique(yield.master[["Crop Name"]]))
+```
+
+Note the crops that were removed. We may want to look at these in more detail later. epecially for categories
+like "CORN WHITE", or "BEANS SNAP PROCESSING", and "TARO ROOT" (who knew that CA produced taro).
+
+```{r prepCommonCrops2_vis}
+# TODO: Investate the mass of the crops that weren't harvested every year
+all.crops[!(all.crops %in% common.crops)]
+```
+
+## Unique ROI categories
+
+We also have to allign the regions of interest (ROI) in our landcover dataset to our harvest dataset. Remember that
+we partitioned the CWU calculation into ROIs based on counties, since harvest yields are reported at the county-scale.
+
+Now, we have to make sure that the county categories that we used for the spatial partitioning (from our political
+border shapefile) allign with the county categories used in the harvest yield reporting. We will also construct a 
+look-up table.
+
+Luckily, the CAC county names match up perfectly with the shapefile metadata, aside from a typo or two.
+
+
+```{r prepCACcounty}
+# Which counties in the harvest dataset ARE NOT present in the ROI index?
+unique(yield.master$County)[which(!(unique(yield.master$County) %in% counties.index$NAME_PCASE))]
+
+# Fix the typos
+# WARNING: HARDCODED VALUES
+yield.master <- yield.master %>%
+  mutate(County = replace(County, County == "San Luis Obisp", "San Luis Obispo")) %>%
+  mutate(County = replace(County, County == "State Total", "State Totals"))
+```
+
+
+# Associate yield ROIs and crop categories with landcover ROIs and crop categories
+
+## Associate counties from harvest record with landcover ROIs
+Here, we use `dplyr::inner_join` to join the county identifiers, (`counties.index["NUM"]`s  to the CAC master table, 
+by matching county names.
+
+```{r}
+# Merge county identifiers
+yield.master <- yield.master %>%
+  left_join(counties.index[c("NAME_PCASE", "NUM")], by = c("County" = "NAME_PCASE")) %>%
+  rename(roi.index = NUM) %>%
+  mutate(roi.index = replace(`roi.index`, County == "Sum of Others", 991)) %>%
+  mutate(roi.index = replace(`roi.index`, County == "State Totals", 999))
+  
+# TODO: TEST: Did the join operation work properly?
+#setdiff(t1[sample(nrow(t1), 100),][c("County", "roi.index")], counties.index[c("NAME_PCASE", "NUM")] )
+#t1[sample(nrow(t1), 100),][["roi.index"]] %in% counties.index[["NUM"]]
+```
+
+## Associate harvested crops with CDL crops
+
+## Summarize harvested acres statewide for comparison with landcover areas
+Here, we generate a list harvested acres for all years, fpr all counties (`County Code == 999`). 
+We save this file as `NASS_acres_state.csv`
+
+The key operation is `dplyr::outer_join()`, an operation that can be thought of as the union set.
+
+```{r exportCommonCrops_untidy, eval=FALSE, include=FALSE}
+# 'Untidy' use of R/tidyverse packages
+# TODO: For fun, figure out how to do this using just one (compound) statement.
+acres.state.master <- yield.master %>%
+  filter(`County Code` == 999) %>%
+  select(Year, `Crop Name`, `Commodity Code`, `Harvested Acres`) %>%
+  group_by(Year) %>%
+  nest() %>%
+  select(data) %>%
+  lapply(function(x) {(x)})
+
+acres.state.master <- Reduce(function(...) full_join(..., by=c('Crop Name', 'Commodity Code')), acres.state.master[["data"]])
+
+# WARNING: Hardcoded years
+colnames(acres.state.master) <- c("Crop Name", "Commodity Code", 2007:2015)
+# Order by Crop Name
+acres.state.master <- acres.state.master[order(acres.state.master$`Crop Name`),]
+# Write to csv
+write_csv(acres.state.master, "output/yields/NASS_acres_state.csv")
+```
+
+Why did we care about harvested acres? It serves as a point of comparison, and allows us to see if the acres harvested 
+align with the acres planted, as identified by CDL. We do this comparison in the `21.validation` worksheet.
+
+NOTE: We are fortunate that the CAC data set includes harvested acres. Don't expect all yield reports from
+other regions to include harvested acres.
+
+NOTE: I dropped the typos in Crop Name when manually reconciling CDL and CAC categories.
+TODO: Maybe create logic for flagging instances when a commodity code is mapped to more than one commodity name
+      (which is what happened for "CATTLE CALVES...", "NURSERY FLOWER..." and etc.).
+
+## Perform crop-category association
+
+For now, we **manually** reconciled the USDA/NASS production categories to the CDL classes, using a pairing similiar to
+that used by Fulton et al. 2012 (Appendix 2), where they related the County Agricultural Commissioners’ Production
+Data Commodity Descriptions to "PI Codes" (Where PI likely refers to "Photo Identifier"). This manually-annotated
+table is found under `output/tables/CDL_NASS.csv`. Let's import it and create a lookup table.
+
+Here, we use `dplyr::inner_join` to join the `cdl_value`s and the `cdl_name`s to the CAC master table, by matching
+`Commodity Code`s.
+
+```{r assignYieldLandcover}
+# Import if it hasn't been done already
+# WARNING: Hardcoded path
+cdl_nass <- read_csv("output/tables/CDL_NASS.csv")
+
+yield.lc.master <- yield.master %>%
+  left_join(cdl_nass[c("Commodity Code", "cdl_value", "cdl_name")], by = "Commodity Code") 
+
+yield.lc.harvested <- yield.lc.master %>%
+  filter(!is.na(cdl_value) & !is.na(Production))
+
+yield.lc.excluded<- yield.lc.master %>%
+  filter(is.na(cdl_value) | is.na(Production))
+```
+
+We just excluded crops that had a missing landcover index (`cdl_values`) **and** no reported yield (`Production`). 
+Therefore, the entries that we excluded had either missing `cdl_values` **or** missing `Production`.
+
+## Clean up unit names (CAC-specific)
+
+At least for the CAC harvest dataset, the `Unit` field had some formatting inconsistency. Removing the non-harvested
+crops seems to have left only one type of production unit
+```{r}
+unique(yield.lc.harvested["Unit"])
+```
+
+`NA` values are found in the entries for `State Totals` or `Sum of Others`, which are expressed in the same units as
+the entries for each county. Let's just coerce all units to tons (after a quick sanity check).
+
+```{r}
+# WARNING: Hardcoded units
+yield.lc.harvested <- yield.lc.harvested %>%
+  mutate(Unit = "ton")
+```
+
+
+# Summarize harvest data by regions of intereste
+
+Now, let's summarize harvest data by categories and prepare for exporting into our next step. Here is where
+one of the larger assumptions are made:
+
+* Assumption: our mapping of crops from the harvest data to our landcover classes and crop coefficient classes 
+is somewhat accurate. For example, it's reasonable to map `BERRIES BLACKBERRIES` and `BERRIES RASPBERRIES` into 
+a general *'Caneberries'* category, since we can expect them to have similar growing characteristics, and the 
+landcover dataset does not discriminate between different types of caneberries. Ideally, we would like to be 
+able to discriminate between different caneberries *and* have a crop growth model for each type of plant.
+* Assumption: There is no "double-counting" of harvested crop mass between similar crop categories. For example, 
+if we combine `PEACHES CLINGSTONE`, `PEACHES FREESTONE`, and `PEACHES UNSPECIFIED` into a general *'Peaches'* 
+category, then we wouldn't expect any double counting. What about `CELERY FOOD SERVICE`, `CELERY FRESH MARKET`,
+and `CELERY UNSPECIFIED`? Well, if a region reports celery harvested for the fresh market, it wouldn't also be reported
+food service sale. The same goes for other commodities. Cotton has a few categories:`COTTON LINT PIMA`, 
+`COTTON LINT UNSPECIFIED`, `COTTON LINT UPLAND`, `COTTON SEED PLANTING`, and `COTTONSEED`. We wouldn't expect the 
+same biomass to get counted multiple times as lint, planting seed, and cottonseed.
+
+## Summarize harvested weight
+
+So, now let's add up all of the production amounts within each county, by commodity, by year. For the county
+tallies,we drop the categories that represent aggregrations of counties. For the statewide tally, we condition 
+on the `State Totals`category.
+
+```{r}
+# WARNING: Hardcoded path
+yield.lc.bycounty <- yield.lc.harvested %>%
+  group_by(Year, cdl_name, cdl_value, roi.index, County) %>%
+  filter(`County Code` != 991 & `County Code` != 999) %>% 
+  summarise(prod.tons = sum(Production), val.usd = sum(Value), hvst.acres = sum(`Harvested Acres`)) %>%
+  mutate(prod.tonne = `prod.tons` * conv[["ton"]][["tonne"]]) %>%
+  rename(cdl.value = cdl_value, cdl.name = cdl_name) %>%             # TODO: Replace with consistent naming
+  write_csv(., "output/yields/NASS_summarized_bycounty.csv")
+
+yield.lc.bystate <- yield.lc.harvested %>%
+  group_by(Year, cdl_name, cdl_value, roi.index, County) %>%
+  filter(`County Code` == 999) %>% 
+  summarise(prod.tons = sum(Production), val.usd = sum(Value), hvst.acres = sum(`Harvested Acres`)) %>%
+  mutate(prod.tonne = `prod.tons` * conv[["ton"]][["tonne"]]) %>%
+  rename(cdl.value = cdl_value, cdl.name = cdl_name) %>%             # TODO: Replace with consistent naming
+  write_csv(., "output/yields/NASS_summarized_bystate.csv")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

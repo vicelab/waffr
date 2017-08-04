@@ -1,0 +1,249 @@
+---
+title: "Figures: 2008-2015 averages by county"
+author: "asmtry"
+output:
+  html_document:
+    css: base.css
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=10, fig.asp = 0.818, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
+        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+        "rgdal", "sf", "devtools")
+# As of July 2017, this worksheet uses `sf` features of ggplot that are currently under development
+devtools::install_github("tidyverse/ggplot2")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggplot2")
+ggplot2::theme_set(theme_bw())
+```
+
+## Import data
+
+`cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
+and the corresponding name and index number in the FAO Indicative Crop Classification (ICC 1.1).
+
+`roi.table` contains relations from the regions of interest used to aggregrate the WF, PPT, 
+and CWU calculations performed in steps 8-10. Here, the relation is the attribute table from a
+shapefile of California county political boundaries. Attributes include: county index, name, and
+corresponding DWR hydrologic region.
+
+`ca.counties` contains the shapefile, on which `roi.table` is based.
+
+`ca.hr` contains the shapefile of DWR hydrologic regions, for California.
+
+`wf.master.wyear` contains annual sums of cwr, ppt, etc, wf, and harvested tons/acres/USD 
+aggregrated by crop, county, and water year. It only includes the counties that have corresponding 
+entries in the County Ag Comissioners (CAC) annual yield reports. Counties that had modeled ag 
+production, without an accompanying entry in the CAC annual reports were omitted.
+
+`wf.master.cyear` contains the above, except aggregrated by calendar year (instead of water year). 
+This data set includes the extra year of 2007.
+
+`yield.master` contains all of the statistics reported by the CAC annual reports (production tons, 
+harvested acres, value in USD), for the modeled crops.
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+ca.counties <- read_sf("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+ca.hr <- read_sf("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
+wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
+wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+## Create some functions for commonly used summary statistics
+
+Typially in a boxplot, outliers are marked as values that fall outside of 1.5 times the interquartile range 
+avove and below the 25% and 75% quantiles. `is_extreme()` is a function that we define below, that applys the
+same criteria and returns TRUE if the value is a suspected outlier/extreme falue, and false otherwise.
+
+```{r summaryFuns}
+is_extreme <- function(series) {
+  #' Tags values in a series according to whether or not they would appear as oulier points
+  #` in a Tukey boxplot (values that lie outside of the H-spread.)
+  #` Specifically, these are values that are less or greater than the 1st and 3rd quartiles
+  #` plus 1.5 times the interquartile range.
+  #' @param series Vector of type numeric (int or double)
+  #' @return Vector of type logical, TRUE if the value is an outlier, FALSE if it is not
+  return(series < (quantile(series, 0.25) - (1.5 * IQR(series)) ) | series > (quantile(series, 0.75) + (1.5 * IQR(series)) ))
+}
+```
+
+## Clean erronious observations
+
+Here, we clean obviously erronious observations.
+
+I think the 2009 Riverside CAC survey severly under-reports the "Oats" category to the point that
+it makes the "Oats" water footprint blow up (several orders of magnitude higher than baseline, see
+the by-year summary notebook).
+
+```{r cleanData}
+wf.master.wyear <- wf.master.wyear %>%
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+```
+
+# C1: Average statewide water demand *for all* years, by county
+
+Here, we sum all daily volumes of cwr, ppt, et, and wf by county, over each calendar and water year.
+Then, we average all of the yearly sums, to produce an "average year" value, for each parameter.
+```{r calc1}
+wf.master.allcounty.cyear <- wf.master.cyear %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  group_by(roi.index, County) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
+  left_join(roi.table %>% select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
+  `attr<-`("year_type", "calendar") %>%
+  `attr<-`("summary_type", "total")
+
+wf.master.allcounty.wyear <- wf.master.wyear %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  group_by(roi.index, County) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
+  left_join(roi.table %>% select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  ungroup() %>%
+  `attr<-`("year_type", "water") %>%
+  `attr<-`("summary_type", "total")
+```
+
+# C2: Join spatial indicies
+
+We have imported the spatial layers as simple features, implemented within tidy dataframes.
+Thus, we can join other attributes to each spatial feature, provided that the indicies align.
+Here, we are joining the county-wise average annual statistics, also visualized in notebook 2,
+`2.cuml_avg_cnty.Rmd`.
+
+
+For California counties, we join the average yearly totals (from WY 08-15) to each county
+polygon. 
+
+For DWR Hydrologic Regions, we total the average wf/cwu/ppt of all of the counties that lie within
+a particular hydrological region. The relation between counties -> hydrologic regions was done
+earlier with a spatial join based on county centroids in GDAL+QGIS. That is, a county was classed
+into a particular hydrological region depending on which region its *centroid* resided.
+
+```{r calc2}
+ca.counties.allwy <- ca.counties %>%
+  left_join(wf.master.allcounty.wyear %>% 
+              select(roi.index, cwr_avg, ppt_avg, et.b_avg, et.g_avg, wf.b_avg, wf.g_avg),
+            by = c("NUM" = "roi.index"))
+
+
+ca.hr.allwy <- ca.hr %>%
+  left_join(wf.master.allcounty.wyear %>%
+              group_by(`HR_NAME`) %>%
+              summarize_at(vars(cwr_avg, ppt_avg, et.b_avg, et.g_avg, wf.b_avg, wf.g_avg), funs(sum(., na.rm = TRUE))),
+            by = c("HR_NAME" = "HR_NAME"))
+  
+```
+
+# P1: County-wise averages, WF Blue/Green, CWU, and PPT
+```{r}
+local({
+  cty.wfb <- ca.counties.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = wf.b_avg), color = "blue") +
+    scale_fill_viridis(name = "wf.b (m3/tonne)", trans = "log", option = "magma", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean Blue WF, log 10 scale")
+
+  cty.wfg <- ca.counties.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = wf.g_avg), color = "darkgreen") +
+    scale_fill_viridis(name = "wf.g (m3/tonne)", trans = "log", option = "magma", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean Green WF, log 10 scale")
+
+  cty.ppt <- ca.counties.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = ppt_avg), color = "white") +
+    scale_fill_distiller(name = "ppt (m3)", trans = "log", type = "seq", palette = "Purples", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean PPT, log 10 scale")
+  
+  cty.cwr <- ca.counties.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = cwr_avg), color = "white") +
+    scale_fill_viridis(name = "cwr (m3)", trans = "log", option = "viridis", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean CWR, log 10 scale")
+  
+  t1 <- ggdraw() + draw_label("Average annual statistics by-county for WY 08-15", 
+                              fontface='bold')
+  plot_grid(t1, arrangeGrob(cty.wfb, cty.wfg, cty.ppt, cty.cwr), 
+            ncol = 1, rel_heights = c(0.1, 1))
+})
+```
+
+# P2: HR-wise averages, WF Blue/Green, CWU, and PPT
+Where HR stands for Hydrologic Region. Tallies within each regon represent the sum of all
+of the counties whose centroids lie within each region.
+```{r}
+local({
+  hr.wfb <- ca.hr.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = wf.b_avg), color = "blue") +
+    scale_fill_viridis(name = "wf.b (m3/tonne)", trans = "log", option = "magma", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean Blue WF, log 10 scale")
+
+  hr.wfg <- ca.hr.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = wf.g_avg), color = "darkgreen") +
+    scale_fill_viridis(name = "wf.g (m3/tonne)", trans = "log", option = "magma", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean Green WF, log 10 scale")
+
+  hr.ppt <- ca.hr.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = ppt_avg), color = "white") +
+    scale_fill_distiller(name = "ppt (m3)", trans = "log", type = "seq", palette = "Purples", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean PPT, log 10 scale")
+  
+  hr.cwr <- ca.hr.allwy %>%
+    ggplot() +
+    geom_sf(mapping = aes(fill = cwr_avg), color = "white") +
+    scale_fill_viridis(name = "cwr (m3)", trans = "log", option = "viridis", 
+                       labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+     labs(subtitle = "Mean CWR, log 10 scale")
+  
+  t1 <- ggdraw() + draw_label("Average annual statistics by-hydrologic region for WY 08-15", 
+                              fontface='bold')
+  plot_grid(t1, arrangeGrob(hr.wfb, hr.wfg, hr.ppt, hr.cwr, ncol = 2, nrow = 2), 
+            ncol = 1, rel_heights = c(0.1, 1))
+})
+```
+
+
+# Chunks not run
+## Playing around with new geatures in st/ggplot2
+```{r, eval=FALSE, include=FALSE}
+#ggplot() + geom_sf(data = ca.hr)
+#ggplot() + geom_sf(data = ca.counties)
+RColorBrewer::display.brewer.all()
+```
+

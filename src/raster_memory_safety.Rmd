@@ -1,0 +1,66 @@
+---
+title: "Memory safety in raster"
+author: "asmtry"
+date: "May 24, 2016"
+output: html_document
+---
+
+# Typical example for raster math (by dumping to vector in memory)
+
+First, let's create a sample raster (10x10, 100 cells)
+```{r}
+library(raster)
+r <- raster(ncol=10, nrow=10)
+r[] <- 1:100
+r
+plot(r)
+```
+
+Now we make a simple function to add 5 to all cell values of `r`:
+```{r}
+f2 <- function(x, a) {
+  v <- getValues(x)
+  v <- v + a
+  x <- setValues(x, v)
+return(x)
+}
+s <- f2(r, 5)
+s
+```
+This function works and all, but it dumps all of the values within the raster input into a vector (`v <- getValues(x)`), which resides in memory. So this could fail if R runs out of memory for a large raster.
+
+# Working with chunks
+
+```{r}
+f3 <- function(x, a, filename) {
+  out <- raster(x)
+  out <- writeStart(out, filename, overwrite=TRUE)
+  for (r in 1:nrow(out)) {
+    v <- getValues(x, r)
+    v <- v + a
+    out <- writeValues(out, v, r)
+  }
+  out <- writeStop(out)
+  return(out)
+}
+s <- f3(r, 5, filename= ' test ' )
+s
+```
+
+```{r}
+f4 <- function(x, a, filename) {
+  out <- raster(x)
+  bs <- blockSize(out)
+  out <- writeStart(out, filename, overwrite=TRUE)
+  for (i in 1:bs$n) {
+    v <- getValues(x, row=bs$row[i], nrows=bs$nrows[i] )
+    v <- v + a
+    out <- writeValues(out, v, bs$row[i])
+    }
+  out <- writeStop(out)
+  return(out)
+}
+s <- f4(r, 5, filename= ' test.grd ' )
+blockSize(s)
+```
+

@@ -1,0 +1,83 @@
+---
+title: "Figures: 2007/8-2015 averages"
+author: "asmtry"
+output: html_document
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
+        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "devtools")
+install_github("wilkox/ggfittext")
+install_github("wilkox/treemapify")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggfittext", "treemapify")
+
+ggplot2::theme_set(theme_bw())
+options("scipen"=100, "digits"=4)
+```
+
+# Setup
+
+Import data
+```{r importData, message = FALSE}
+# Crop names/attributes
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+# County names/attributes
+roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
+wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+# Calculate average statewide water demand for all years
+
+```{r}
+wf.master.allcrop.cyear <- wf.master.cyear %>%
+  group_by(cdl.value, cdl.name, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs("sum")) %>%
+  left_join(cdl.table %>% select(value,`FAO_shortgroup`),
+            by = c("cdl.value" = "value")) %>%
+  ungroup()
+
+wf.master.allcrop.wyear <- wf.master.wyear %>%
+  group_by(cdl.value, cdl.name, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs("sum")) %>%
+  left_join(cdl.table %>% select(value,`FAO_shortgroup`),
+            by = c("cdl.value" = "value")) %>%
+  ungroup()
+```
+
+## Subset by 2010 water year
+
+We also calculated cell frequencies in a different step. Let's include these in our 
+tallies in order to obtain TAF/acre, which is how the DWR reports agricultural water 
+use in their tallies.
+
+```{r}
+area.2010 <- read_csv("output/area.tallies/freq_2010.csv")
+wf.master.2010.wyear <- wf.master.allcrop.wyear %>%
+  filter(Year == 2010) %>%
+  left_join(area.2010 %>% rename(pixel.count = `count`),
+            by = c("cdl.value" = "value")) %>%
+  select(cdl.name, cwr, pixel.count) %>%
+  mutate(sq.m = pixel.count * 900) %>%
+  mutate(acres = sq.m * 0.00024710538) %>%
+  mutate("1000_acres" = acres / 1000) %>%
+  mutate(AF = (cwr * 0.0008107)) %>%
+  mutate(TAF = (AF / 1000)) %>%
+  mutate("AF/A" = AF/acres)
+
+wf.summary.2010.wyear <- wf.master.2010.wyear %>%
+  summarize_at(vars(cwr, pixel.count, sq.m, `1000_acres`, acres, AF, TAF), funs(sum = "sum"))
+kable(wf.master.2010.wyear)
+kable(wf.summary.2010.wyear)
+paste("Average AF/A is: ", mean(wf.master.2010.wyear[["AF/A"]]))
+```

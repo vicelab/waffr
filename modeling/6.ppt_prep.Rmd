@@ -1,0 +1,149 @@
+---
+title: "CWU calulations"
+author: "asmtry"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = 'D:/lbooth/wfar', warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/Kc.R")
+source("R/eto.R")
+
+pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
+rasterOptions(progress = "text", tmpdir = "B:/tmp", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+```
+
+```{r importData}
+# ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
+# ca_boundary <- readOGR("Input/SHAPEFILES/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
+ca_boundary.path <- "Input/SHAPEFILES/cb_2014_CA_5m.shp"
+ppt.dir <- "input/PRISM"
+ppt.crs <- CRS("+init=epsg:4269")
+```
+
+To perform operations on collections of daily ppt layers, we can stack each raster file 
+```{r prepareAnalysis}
+ppt.paths <- list.files(path=ppt.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+ppt.table <- data.frame(
+  abs_path = ppt.paths,
+  source = sapply(strsplit(file_path_sans_ext(ppt.paths),"/"),'[[',2),
+  product_name = "ppt",
+  date = as.Date(regmatches(ppt.paths,regexpr("(?<=prism_ppt_us_30s_)(.*)(?=.tif)",ppt.paths, perl=TRUE)), format="%Y%m%d"),
+  stringsAsFactors = FALSE
+)
+
+# ppt.table["w.year"] <- as.Date(waterYearlt(ppt.table$date))
+
+# ppt.table["minval"] <- sapply(ppt.table[["abs_path"]], 
+#                               function(x) minValue(setMinMax(raster(x))))
+# ppt.table["maxval"] <- sapply(ppt.table[["abs_path"]], 
+#                               function(x) maxValue(setMinMax(raster(x))))
+
+# ppt.table[c("xres", "yres", "minval", "maxval")] <- sapply(ppt.table[["abs_path"]], 
+#                               function(x) {
+#                                 x <- setMinMax(raster(x))
+#                                 return(c(xres(x),yres(x),minValue(x),maxValue(x)))
+#                                 })
+
+# Tag (x,y)[min,max,res], ncell, and nlayers if applicable
+# ppt.table <- rtTagParam(ppt.table)
+# Tag anomalous parameters according to metadata parameters specified
+# ppt.table["anoml"] <- tagAnomalous(ppt.table, c("xmin", "xmax", "ymin", "ymax", "ncell", "xres", "yres"), modal)
+
+rm(ppt.paths)
+```
+
+At least for `PRISM`, the data are clean.
+```{r dataInspection}
+any(ppt.table$anoml)
+# Limit our analysis to 2007-2016
+ppt.table <- ppt.table[!(year(ppt.table[["date"]])<2007),]
+
+missing.date.index <- !(seq(ymd("2007-01-01"), ymd("2015-12-31"), by = "day") %in% ppt.table[["date"]])
+any(missing.date.index)
+rm(filled.obs, missing.dates, missing.date.index)
+```
+
+As there is nothing major amiss, the resolution and minor extent issues can be resolved by `resample`-ing, which is required for upscaling anyway.
+
+## Round ppt
+This is a very quick step. Completes in under 6 minutes on 20 threads.
+```{r}
+scale_ppt <- function(abs_path, ppt.crs, source, date) {
+  dir.create(paste0("output/cleaned_inputs/", source, "_scaled/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cleaned_inputs/", source, "_scaled/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
+  calc(raster(abs_path, crs = ppt.crs), fun=function(x){round(x * 100)},
+       format = "GTiff", progress = "text", 
+       datatype = "INT2U", overwrite = TRUE, filename = outpath)
+}
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(min((detectCores() - 5), nrow(ppt.table)), outfile = "debug.txt")
+clusterExport(cl, list("ppt.table", "scale_ppt"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+parRapply(cl, ppt.table,  
+       function(x) 
+         scale_ppt(x[["abs_path"]], CRS("+init=epsg:4269"), x[["source"]], x[["date"]]))
+stopCluster(cl)
+```
+
+## 2.2 Import and re-inspect rounded rasters
+```{r loadCleaned}
+# Load cleaned files into file table
+# TODO: DRY
+ppt.paths.scaled <- list.files(path="output/cleaned_inputs/PRISM_scaled", pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+# TODO: remove hardcoded gsub
+ppt.table.scaled <- data.frame(
+  abs_path = ppt.paths.scaled,
+  source = sapply(strsplit(file_path_sans_ext(ppt.paths.scaled),"/"),'[[',3),
+  product_name = "ppt",
+  date = as.Date(sapply(strsplit(file_path_sans_ext(ppt.paths.scaled),"/"),'[[',5), format="%Y-%m-%d"),
+  stringsAsFactors = FALSE
+)
+
+rm(ppt.paths.scaled, ppt.table)
+```
+
+## Warp ppt
+```{r, eval=FALSE, include=FALSE}
+# This is a test run of the function to be applied to make sure that it works as expected
+gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
+                 "-s_srs EPSG:4269 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+                 ca_boundary.path, ppt.table.scaled[1,1], "output/testout.tif")
+```
+
+Warp took 6 hrs on 19 threads (12 hyperthreaded cores)
+Started: 23:35
+Ended: 05:17
+```{r}
+warp_ppt <- function(abs_path, cut.shapefile, source, date) {
+  dir.create(paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
+  gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
+                 "-s_srs EPSG:4269 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+                 cut.shapefile, abs_path, outpath)
+}
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(19, outfile = "debug.txt")
+clusterExport(cl, list("ppt.table.scaled", "warp_ppt", "ca_boundary.path", "gdalwarp_wrapper"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+parRapply(cl, ppt.table.scaled,  
+       function(x) 
+         warp_ppt(x[["abs_path"]], ca_boundary.path, x[["source"]], x[["date"]]))
+stopCluster(cl)
+```
+Started at 23:35, projecteded to take 3 hrs

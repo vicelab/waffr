@@ -1,0 +1,106 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: html_document
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+
+pkgTest("tidyverse", "lubridate", "tools", "readr")
+```
+
+In the previous steps we:
+
+* 
+*
+
+```{r importData}
+# # TODO: Remove readr::type_convert(), once CDL_Kc_LUT_daily isnt written with factors
+# kc.index <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")[,1:2] %>%
+#   mutate_all(as.character) %>%
+#   type_convert
+
+cdl.index <- read_csv("input/TABLES/cdl_crops.csv")
+cwu.master <- readRDS("output/cwu_master.rds")
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+
+# Perform the WF calculation 
+
+## By calendar year
+```{r}
+cwu.master.cyear <- cwu.master %>%
+  group_by(crop, county, year = year(date)) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g), funs(sum(., na.rm = TRUE)))
+
+wf.master.cyear <- yield.master %>%
+  inner_join(cwu.master.cyear, by = c("cdl.value" = "crop", "roi.index" = "county", "Year" = "year")) %>%
+  mutate(wf.b = (et.b / prod.tonne)) %>%
+  mutate(wf.g = (et.g / prod.tonne)) %>%             
+  write_csv("output/wfs/wf_total_cyr.csv") %>%
+  write_rds("output/wfs/wf_total_cyr.rds", compress = "gz")
+```
+
+## By water year
+```{r}
+cwu.master.wyear <- cwu.master %>%
+  group_by(crop, county, year = year(waterYearlt(date))) %>%        # Create water year grouping
+  filter(n_distinct(date) == 365 | n_distinct(date) == 366) %>%     # Filter for only complete years
+  summarize_at(vars(cwr, ppt, et.b, et.g), funs(sum(., na.rm = TRUE)))
+
+wf.master.wyear <- yield.master %>%
+  inner_join(cwu.master.wyear, by = c("cdl.value" = "crop", "roi.index" = "county", "Year" = "year")) %>%
+  mutate(wf.b = (et.b / prod.tonne)) %>%
+  mutate(wf.g = (et.g / prod.tonne)) %>%             
+  write_csv("output/wfs/wf_total_wyr.csv") %>%
+  write_rds("output/wfs/wf_total_wyr.rds", compress = "gz")
+```
+
+## Save results
+
+Note that we are explicitly casting categorical variables into the proper data type. We do this now, since
+we are going to be passing these modeling results to the visualization and analysis routines, which can perform
+specialized operations on 
+
+## Inspecting discrepancies
+Confused why the number of observations in the wf table is so much dramatically smaller (by ~50%) than the yield
+observations table? Well, there are many entries for crops harvested in counties that were not observed
+in the landcover dataset for that particular year. This is simply due to deficiencies in the land cover data set
+(in this case, the CDL).
+
+For example, the CAC records report lettuce harvests for every year from 2007 through 2016. However, the CDL
+data set does not report any pixels of lettuce landcover for 2007 and 2009 (including the double-crop lettuce
+landcover categories). There are many other entries with discrepancies, either due to:
+
+* Missing observations in the yield or landcover datasets respectively. `Note`: The CDL dataset is the result
+of supervised classification (specifically, a decision tree classifier), whereas the CAC dataset is the result
+of surveys. We can assume that the CAC dataset is more reflective of what is actually harvested and grown within
+a region.
+* Misallignments between the yield and landcover datasets. For example, in Imperial county, sweet corn does not
+appear in the landcover datasets until 2011, however it is present in the harvest records every year, and unspecified
+corn is present in the landcover datasets every year. One attempt to reconcile data sets would be to aggregrate all
+types of corn into one category.
+
+To inspect this a bit deeper, we can use `dplyr::anti_join()`, which only displays entries in x (`yield.master`)
+that **don't** have a matching entry in y (`cwu.master...`).
+
+```{r, eval=FALSE, include=FALSE}
+# t1 <- anti_join(yield.master, cwu.master.cyear, by = c("cdl.value" = "crop", "roi.index" = "county", "Year" = "year"))
+# 
+# cwr.master <- readRDS("output/cwr_master.rds") # Not needed, but including for inspecting
+# t2 <- cwr.master %>%
+#   filter(county == 13) %>% 
+#   group_by(crop, county, year = year(date)) %>%
+#   summarize(sum = sum(zsum)) %>%
+#   left_join(cdl.index, by = c("crop" = "value"))
+```
+

@@ -1,0 +1,107 @@
+---
+title: "CWU calulations"
+author: "asmtry"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = 'D:/lbooth/wfar', warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/Kc.R")
+source("R/eto.R")
+
+pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
+#rasterOptions(progress = "text", tmpdir = "B:/tmp", time = TRUE)
+# rasterOptions(todisk = TRUE)
+rasterOptions(progress = "text", time = TRUE)
+```
+
+```{r importData}
+eto.dir <- "output/cleaned_inputs/SPATIALCIMIS_scaled_projected"
+lc.dir <- "output/cleaned_inputs/CDL_CA_WGS84_projected"
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+# TODO: Remove leap year hack (`366` = kc.lut[["365"]])
+kc.lut <- cbind(index = 1:nrow(kc.lut), kc.lut, `366` = kc.lut[["365"]])
+global.crs <- CRS("+init=epsg:4326")
+```
+
+Note: We have already alligned and reprojected all data sets in previous steps.
+
+## 1.1 Import rounded eto
+```{r loadEto}
+# Load cleaned files into file table
+# TODO: DRY
+eto.paths <- list.files(path=eto.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+# TODO: remove hardcoded gsub
+eto.table <- data.frame(
+  abs_path = eto.paths,
+  source = sapply(strsplit(file_path_sans_ext(eto.paths),"/"),'[[',3),
+  product_name = "ETo",
+  date = as.Date(sapply(strsplit(file_path_sans_ext(eto.paths),"/"),'[[',5), format="%Y-%m-%d"),
+  stringsAsFactors = FALSE
+)
+
+rm(eto.paths, eto.dir)
+```
+
+## 1.2 Import rounded landcover
+```{r loadLc}
+# Load cleaned files into file table
+# TODO: DRY
+lc.paths <- list.files(path=lc.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+lc.table <- data.frame(
+  abs_path = lc.paths,
+  source = sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',3),
+  product_name = 'CDL',
+  date = as.Date(sprintf("%s-01-01",sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',4)), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+rm(lc.paths, lc.dir)
+
+```
+
+
+## 1.3 Append data to eto table
+
+```{r}
+eto.table[["lc_path"]] <- sapply(year(eto.table[["date"]]), function(x) lc.table[year(lc.table[["date"]]) == x,][["abs_path"]])
+```
+
+
+# 2 Perform CWR/ETc calculation day-wise
+
+TODO: Verify that `global.crs` is not needed
+```{r calcETc}
+make_etc <- function(abs_path, lc_path, global.crs, date) {
+  dir.create(paste0("output/cwr_calcs/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cwr_calcs/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
+  day.of.year <- yday(date)
+  overlay(raster(abs_path), raster(lc_path), 
+        fun = function(eto.value, lc.value) {
+          return(kc.lut[match(lc.value, kc.lut[["value"]]), as.character(day.of.year)] 
+                 * eto.value)}, 
+        format = "GTiff", progress = "text", datatype = "INT4U", overwrite = TRUE, filename = outpath, forcefun = TRUE)
+}
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(min((detectCores() - 2), nrow(eto.table)), outfile = "debug.txt")
+clusterExport(cl, list("eto.table", "make_etc", "kc.lut"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+parRapply(cl, eto.table,  
+       function(x) 
+         make_etc(x[["abs_path"]], x[["lc_path"]], CRS("+init=epsg:4326"), x[["date"]]))
+stopCluster(cl)
+```
+Started at 01:14 on Thu Mar  2  Finished Fri Mar  3 at 9:03 duration 32 hrs
+Started at 20:06 on Tue Apr 25  Finished Thu Apr 27 at 5:53 duration 34:27 
+
+

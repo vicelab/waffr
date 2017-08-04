@@ -1,0 +1,83 @@
+---
+title: "prism_sanitychecks"
+output: html_document
+---
+
+```{r setupKnitr}
+knitr::opts_knit$set(echo = TRUE, root.dir = 'D:/lbooth/wfar', warning = FALSE, message = FALSE, collapse = TRUE)
+```
+
+```{r setupEnv, message=FALSE}
+source("R/utilities.R")
+source("R/prism.R")
+
+pkgTest("rgdal", "raster", "prism", "tools", "devtools", "ggplot2")
+devtools::install_github("ropensci/prism")
+
+rasterOptions(progress = "text", tmpdir = "D:/lbooth/tmp", time = TRUE)
+options(prism.path = "input/PRISMr")
+```
+
+This `.Rmd` document uses the `prism` package to download and verify the aggregrative statistics used in freely available monthly/annual PRISM products.
+
+```{r importBoundaries}
+ca_boundary <- readOGR("input/MAPS/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
+```
+
+```{r prepareAnalysis_2013-14-by-month}
+#Download prism data if necessary and save in input path
+#get_prism_monthlys(type="ppt", years = 2013:2014, mon = 1:12, keepZip=TRUE)
+#get_prism_annual(type="ppt", years = 2013:2014, keepZip=TRUE)
+prism.Table <- ls_prism_data(absPath = TRUE, name = TRUE)
+
+prism.Table$year <- as.numeric(substr(regmatches(prism.Table$files,regexpr("(?<=4kmM._)(.*)(?=_bil)",prism.Table$files, perl=TRUE)),1,4))
+prism.Table$month <- as.numeric(substr(regmatches(prism.Table$files,regexpr("(?<=4kmM._)(.*)(?=_bil)",prism.Table$files, perl=TRUE)),5,6))
+prism.Table$type <- regmatches(prism.Table$files,regexpr("(?<=PRISM_)(.*)(?=_stable)",prism.Table$files, perl=TRUE))
+prism.Table$w.year <- ifelse(prism.Table$month > 9, prism.Table$year + 1, prism.Table$year)
+```
+
+Next, we find the precipitation totals, for the state of california (masked by `ca_boundary`). We're using `raster::cellStats` to perform the aggregation. Here, `month2yrAgg` computes the mean and median of every cell value over an entire year, where the yearly matrix is composed by adding the contents of each month, cell-wise (i.e. on a cell-by-cell basis).
+
+> *An aside: In `ArcGIS`, cell statistics perform operations on a cell-by-cell basis (i.e. cell-wise). The equivalent for this is operation is `raster::calc`. `raster::cellStats` runs a computation pulling raw values for each cell in the entire matrix. This could be accomplished by calling the raster cell contents directly (e.g. `sum(r[])`), however `raster::cellStats` will scale gracefully for larger data sets that don't fit in-memory.*
+
+```{r t-13-14-by-month, results='hide'}
+bymonth_sumTable.y13_14 <- month2yrAgg(prism.Table, "ppt", "year", ca_boundary, sum)
+bymonth_meanTable.y13_14 <- month2yrAgg(prism.Table, "ppt", "year", ca_boundary, mean)
+```
+
+We can compare these values to the corresponding annual products from PRISM:
+
+```{r t-13-14-by-year, results='hide'}
+byyear_Table.y13_14 <- plainAgg(prism.Table, "ppt", "year", ca_boundary)
+```
+
+And the `sumTable` and `byyear_Table` should match, since the yearly rasters were constructed by summing the layers of the monthly rasters.
+```{r}
+bymonth_sumTable.y13_14
+bymonth_meanTable.y13_14
+byyear_Table.y13_14
+```
+
+We can compare the values to the corresponding 2014 water year
+
+```{r t-w14-by-month, results='hide'}
+# Notify user of water years without complete data and remove them.
+message(paste(c("The following water years had incomplete data and were excluded:", unique(prism.Table[!(prism.Table$w.year %in% as.numeric(names(which(table(prism.Table$w.year)%%12 == 0)))),]$w.year)), collapse = " "))
+prism.Table.wcomplete = prism.Table[prism.Table$w.year %in% as.numeric(names(which(table(prism.Table$w.year)%%12 == 0))),]
+
+sumTable.w14 <- month2yrAgg(prism.Table.wcomplete, "ppt", "w.year", ca_boundary, sum)
+meanTable.w14 <- month2yrAgg(prism.Table.wcomplete, "ppt", "w.year", ca_boundary, mean)
+```
+
+```{r}
+sumTable.w14
+meanTable.w14
+```
+
+
+# In conclusion
+
+* Prism ppt monthly and yearly rasters represent the total depth of water precipitated in each grid cell.
+** This was verified by comparing Merced temperatures to almanac values from ucanr and weatherunderground for year 2013.
+
+

@@ -1,0 +1,191 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+source("R/eto.R")
+
+pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
+rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+```
+
+```{r importData}
+# ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
+# ca_boundary <- readOGR("input/SHAPEFILES/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
+ca.counties.path <- "output/ca_counties.tif"
+ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+cwr.dir <- "output/cwr_calcs"
+ppt.dir <- "output/cleaned_inputs/PRISM_scaled_projected"
+lc.dir <- "output/cleaned_inputs/CDL_CA_WGS84_projected"
+index.dir <- "output/intermediaries/county_lc_index/"
+main.crs <- CRS("+init=epsg:4269")
+```
+
+```{r prepareAnalysis}
+cwr.paths <- list.files(path=cwr.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+cwr.table <- data.frame(
+  abs_path = cwr.paths,
+  source = sapply(strsplit(file_path_sans_ext(cwr.paths),"/"),'[[',2),
+  product_name = "cwr",
+  date = as.Date(sapply(strsplit(file_path_sans_ext(cwr.paths),"/"),'[[',4), format="%Y-%m-%d"),
+  stringsAsFactors = FALSE
+)
+
+cwr.table["w.year"] <- as.Date(waterYearlt(cwr.table$date))
+
+ppt.paths <- list.files(path=ppt.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+ppt.table <- data.frame(
+  abs_path = ppt.paths,
+  source = sapply(strsplit(file_path_sans_ext(ppt.paths),"/"),'[[',3),
+  product_name = "ppt",
+  date = as.Date(sapply(strsplit(file_path_sans_ext(ppt.paths),"/"),'[[',5), format="%Y-%m-%d"),
+  stringsAsFactors = FALSE
+)
+
+ppt.table["w.year"] <- as.Date(waterYearlt(ppt.table$date))
+
+lc.paths <- list.files(path=lc.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+lc.table <- data.frame(
+  abs_path = lc.paths,
+  source = sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',3),
+  product_name = 'CDL',
+  date = as.Date(sprintf("%s-01-01",sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',4)), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+index.paths <- list.files(path=index.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+
+index.table <- data.frame(
+  abs_path = index.paths,
+  date = as.Date(sprintf("%s-01-01",sapply(strsplit(file_path_sans_ext(index.paths),"/"),'[[',4)), format="%F"),
+  stringsAsFactors = FALSE
+)
+
+## TODO: Add input validation logic
+rm(ppt.dir, cwr.dir, ppt.paths, cwr.paths, lc.paths, lc.dir, index.dir, index.paths)
+```
+
+# Tangle aggregation units (2 units)
+```{r}
+# raster(raster()) uses the first landcover raster as a template, discarding values
+# 22858 seconds
+ca.counties.r <- rasterize(ca.counties, raster(raster(lc.table[1,1])), 'NUM', fun = 'last', filename = "output/ca_counties.tif")
+```
+
+
+```{r tanglePairwise}
+tangle_lc_boundaries <- function(lc_path, region_path, date) {
+  dir.create("output/intermediaries/county_lc_index", recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/intermediaries/county_lc_index/", year(date), ".tif")
+  overlay(raster(lc_path), raster(region_path), 
+        fun = function(x,y){return(szudzik_pair(x,y))}, 
+        format = "GTiff", progress = "text", datatype = "INT4U", overwrite = TRUE, filename = outpath, forcefun = TRUE)
+}
+
+# Make only as many clusters as necessary, bound by available cores
+cl <- makeCluster(min((detectCores() - 2), nrow(lc.table)), outfile = "debug.txt")
+clusterExport(cl, list("lc.table", "tangle_lc_boundaries", "ca.counties.path", "szudzik_pair"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+parRapply(cl, lc.table,
+       function(x) 
+         tangle_lc_boundaries(x[["abs_path"]], ca.counties.path, x[["date"]]))
+stopCluster(cl)
+# 529 seconds
+```
+
+
+```{r calcETc}
+make_zone_sum <- function(abs_paths, index_path) {
+  z.table = zonal(raster(abs_paths), raster(index_path), "sum", progress = "text")
+  return(z.table)
+}
+
+product_name = "cwr"
+
+# Make only as many clusters as necessary, bound by available cores
+exe.starttime <- Sys.time()
+cl <- makeCluster(min((detectCores() - 2), nrow(cwr.table)), outfile = "debug.txt")
+clusterExport(cl, list("cwr.table", "index.table", "make_zone_sum", "product_name"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+
+for (year.index in unique(year(cwr.table[["date"]]))) {
+  
+  clusterExport(cl, "year.index")
+  z.table <- clusterMap(cl, make_zone_sum,
+                        abs_paths = cwr.table[year(cwr.table[["date"]]) == year.index,][["abs_path"]],
+                        MoreArgs = list(index_path = index.table[year(index.table[["date"]]) == year.index,][["abs_path"]]),
+                        RECYCLE = TRUE, SIMPLIFY = FALSE)
+           
+  dir.create("output/summaries/", recursive = TRUE, showWarnings = FALSE)
+  saveRDS(z.table, paste0("output/summaries/", product_name, "_", year.index, ".rds"))
+  z.table <- Reduce(function(dtf1, dtf2) cbind(dtf1, dtf2[,2]), z.table)
+  colnames(z.table)[2:length(colnames(z.table))] <- seq(1,length(colnames(z.table))-1)
+  write.csv(z.table, file = paste0("output/summaries/", product_name, "_", year.index, ".csv"))
+}
+stopCluster(cl)
+exe.stoptime <- Sys.time()
+print(paste("Began calculation at", exe.starttime, "and completed at", exe.stoptime))
+```
+
+"Began calculation at 2017-04-30 11:23:30 and completed at 2017-05-02 23:51:30" (2 days 12 hrs)
+
+```{r calcPPT}
+make_zone_sum <- function(abs_paths, index_path) {
+  z.table = zonal(raster(abs_paths), raster(index_path), "sum", progress = "text")
+  return(z.table)
+}
+
+product_name = "ppt"
+
+# Make only as many clusters as necessary, bound by available cores
+exe.starttime <- Sys.time()
+cl <- makeCluster(min((detectCores() - 2), nrow(ppt.table)), outfile = "debug.txt")
+clusterExport(cl, list("ppt.table", "index.table", "make_zone_sum", "product_name"))
+clusterEvalQ(cl,{library(raster)
+  library(lubridate)})
+clusterEvalQ(cl, rasterOptions(progress = "text", time = TRUE))
+
+for (year.index in unique(year(ppt.table[["date"]]))) {
+  
+  clusterExport(cl, "year.index")
+  z.table <- clusterMap(cl, make_zone_sum,
+                        abs_paths = ppt.table[year(ppt.table[["date"]]) == year.index,][["abs_path"]],
+                        MoreArgs = list(index_path = index.table[year(index.table[["date"]]) == year.index,][["abs_path"]]),
+                        RECYCLE = TRUE, SIMPLIFY = FALSE)
+
+  dir.create("output/summaries/", recursive = TRUE, showWarnings = FALSE)
+  saveRDS(z.table, paste0("output/summaries/", product_name, "_", year.index, ".rds"))
+  
+  
+  z.table <- Reduce(function(dtf1, dtf2) cbind(dtf1, dtf2[,2]), z.table)
+  z.table <- cbind(szudzik_unpair(z.table[,1]), z.table[,-1])
+  colnames(z.table) <- 
+    c("crop", "county", seq(1,length(colnames(z.table))-2))
+  write.csv(z.table, file = paste0("output/summaries/", product_name, "_", year.index, ".csv"))
+}
+stopCluster(cl)
+exe.stoptime <- Sys.time()
+print(paste("Began calculation at", exe.starttime, "and completed at", exe.stoptime))
+```
+
+"Began calculation at 2017-05-03 08:46:20 and completed at 2017-05-05 14:52:31" (2 days, 6 hrs)
+

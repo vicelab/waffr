@@ -1,0 +1,42 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+#knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/Kc.R")
+source("R/eto.R")
+
+pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
+rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+```
+
+Tests on `{cwu,ppt}.master`. Requires `kc,lut`.
+Where `x` and `y` are the master table of daily zone sums, 
+prior or after removal of non-modeled categories
+
+These are misc snippets that I used for sanity checking. 
+They could be turned into full-fledged unit tests someday.
+
+```{r}
+unique(x$crop)
+unique(x$county)
+length(unique(x$crop)) * length(unique(x$county))
+length(unique(x$crop)) * length(unique(x$county)) * 365
+table(y$county)
+table(y$crop)
+table(y$county)/365
+table(y$crop)/365
+max(table(y$county)/365)
+max(table(y$crop)/365)
+```
+

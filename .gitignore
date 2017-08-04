@@ -1,0 +1,17 @@
+# RStudio and R session
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user
+
+# knitr cache directories
+/*_cache/
+
+# knitr temporary files
+*.utf8.md
+*.knit.md
+
+# waffr specific
+/input/
+/analysis/cache/
+/analysis/figures/
