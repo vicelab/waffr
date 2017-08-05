@@ -157,8 +157,8 @@ rm(lc.paths.cleaned, lc.table.cleaned)
 TODO Why do we use `gdalwarp` here again?
 ```{r, eval=FALSE, include=FALSE}
 # This is a test run of the function to be applied to make sure that it works as expected
-gdalwarp_wrapper("C:/OSGeo4W64/bin/gdalwarp.exe", "C:/OSGeo4W64/share/gdal",
-                 "-s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
+                 "-s_srs EPSG:4326 -t_srs EPSG:3310 -tr 30 30 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
                  ca_boundary.path, eto.table.scaled[1,1], "output/testout.tif")
 ```
 
@@ -167,7 +167,7 @@ warp_lc <- function(abs_path, cut.shapefile, source, date) {
   dir.create(paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date)), recursive = TRUE, showWarnings = FALSE)
   outpath <- paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
   gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
-                 "-s_srs EPSG:4326 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r near -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+                 "-s_srs EPSG:4326 -t_srs EPSG:3310 -tr 30 30 -r near -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
                  cut.shapefile, abs_path, outpath)
 }
 
@@ -183,7 +183,7 @@ parRapply(cl, lc.table,
 stopCluster(cl)
 ```
 
-# 3 Create per-crop landcover raster masks
+# [Notused] 3 Create per-crop landcover raster masks
 
 At this point, we have a few options:
 1. Re-class the entire landcover rasters according to our Kc lookup table.
@@ -225,7 +225,7 @@ parRapply(cl, lc.table,
 stopCluster(cl)
 ```
 
-# 4 Create per crop-year crop coefficient layers [NOT USED]
+# [Notused] 4 Create per crop-year crop coefficient layers [NOT USED]
 
 ```{r loadMasked}
 # Load cleaned files into file table

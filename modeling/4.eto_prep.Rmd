@@ -23,7 +23,7 @@ rasterOptions(progress = "text", tmpdir = "B:/tmp", time = TRUE)
 ```{r importData}
 # ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
 # ca_boundary <- readOGR("Input/SHAPEFILES/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
-ca_boundary.path <- "Input/SHAPEFILES/cb_2014_CA_5m.shp"
+ca_boundary.path <- "Input/SHAPEFILES/cnty24k09/cnty24k09_state_poly_s100.shp"
 eto.dir <- "input/SPATIALCIMIS"
 eto.crs <- CRS("+init=epsg:3310")
 ```
@@ -136,22 +136,22 @@ rm(eto.paths.scaled, eto.table)
 ## Warp ETo
 ```{r, eval=FALSE, include=FALSE}
 # This is a test run of the function to be applied to make sure that it works as expected
-gdalwarp_wrapper("C:/OSGeo4W64/bin/gdalwarp.exe", "C:/OSGeo4W64/share/gdal",
-                 "-s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
+                 "-s_srs EPSG:3310 -t_srs EPSG:3310 -tr 30 30 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
                  ca_boundary.path, eto.table.scaled[1,1], "output/testout.tif")
 ```
 
 ```{r}
 warp_eto <- function(abs_path, cut.shapefile, source, date) {
-  dir.create(paste0("D:/lbooth/wfar/output/cleaned_inputs/", source, "_projected/", year(date)), recursive = TRUE, showWarnings = FALSE)
-  outpath <- paste0("D:/lbooth/wfar/output/cleaned_inputs/", source, "_projected/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
-  gdalwarp_wrapper("C:/OSGeo4W64/bin/gdalwarp.exe", "C:/OSGeo4W64/share/gdal",
-                 "-s_srs EPSG:3310 -t_srs EPSG:4326 -tr 0.0003258984 0.0003259050 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
+  dir.create(paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date)), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("E:/Users/lbooth/Documents/wfar/output/cleaned_inputs/", source, "_projected/", year(date), "/", format(date, format="%Y_%m_%d"), ".tif")
+  gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",
+                 "-s_srs EPSG:3310 -t_srs EPSG:3310 -tr 30 30 -r bilinear -overwrite -crop_to_cutline -co \"COMPRESS=LZW\" -co \"PREDICTOR=2\" -wm 2000 --config GDAL_CACHEMAX 2000", 
                  cut.shapefile, abs_path, outpath)
 }
 
 # Make only as many clusters as necessary, bound by available cores
-cl <- makeCluster(5, outfile = "debug.txt")
+cl <- makeCluster(20, outfile = "debug.txt")
 clusterExport(cl, list("eto.table.scaled", "warp_eto", "ca_boundary.path", "gdalwarp_wrapper"))
 clusterEvalQ(cl,{library(raster)
   library(lubridate)})
@@ -161,4 +161,4 @@ parRapply(cl, eto.table.scaled,
          warp_eto(x[["abs_path"]], ca_boundary.path, x[["source"]], x[["date"]]))
 stopCluster(cl)
 ```
-Started at 15:00
+Started at 16:11 finished at 23:01. 7 hrs on ts-03, 20 h-threads allocated
