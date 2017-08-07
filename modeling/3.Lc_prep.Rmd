@@ -108,8 +108,8 @@ stopCluster(cl)
 
 ```{r}
 project_cdl <- function(lc.table, abs_path, source, product_name) {
-  dir.create(paste0("output/cleaned_inputs/", source, "_WGS84_30m/"), recursive = TRUE, showWarnings = FALSE)
-  outpath <- paste0("output/cleaned_inputs/", source, "_WGS84_30m/", product_name, ".tif")
+  dir.create(paste0("output/cleaned_inputs/", source, "_30m/"), recursive = TRUE, showWarnings = FALSE)
+  outpath <- paste0("output/cleaned_inputs/", source, "_30m/", product_name, ".tif")
   projectRaster(raster(abs_path), crs = CRS("+init=epsg:4326"), 
            method = "ngb", filename = outpath, format = "GTiff", 
            prj = TRUE, progress = "text", datatype = "INT1U", overwrite = TRUE)
@@ -129,7 +129,7 @@ stopCluster(cl)
 ```{r loadCleaned}
 # Load cleaned files into file table
 # TODO: DRY
-lc.paths.cleaned <- list.files(path="output/cleaned_inputs/CDL_CA_WGS84_30m", pattern=".(tif)$", full.names=T, recursive=TRUE)
+lc.paths.cleaned <- list.files(path="output/cleaned_inputs/CDL_CA_30m", pattern=".(tif)$", full.names=T, recursive=TRUE)
 
 # TODO: remove hardcoded gsub
 lc.table.cleaned <- data.frame(

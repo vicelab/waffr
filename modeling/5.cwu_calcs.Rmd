@@ -22,11 +22,11 @@ rasterOptions(progress = "text", time = TRUE)
 
 ```{r importData}
 eto.dir <- "output/cleaned_inputs/SPATIALCIMIS_scaled_projected"
-lc.dir <- "output/cleaned_inputs/CDL_CA_WGS84_projected"
+lc.dir <- "output/cleaned_inputs/CDL_CA_projected"
 kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
 # TODO: Remove leap year hack (`366` = kc.lut[["365"]])
 kc.lut <- cbind(index = 1:nrow(kc.lut), kc.lut, `366` = kc.lut[["365"]])
-global.crs <- CRS("+init=epsg:4326")
+global.crs <- CRS("+init=epsg:3310")
 ```
 
 Note: We have already alligned and reprojected all data sets in previous steps.
