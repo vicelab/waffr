@@ -37,6 +37,7 @@ yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
 # Perform the WF calculation 
 
 ## By calendar year
+TODO: Create `../wfs/` if it does not exist already
 ```{r}
 cwu.master.cyear <- cwu.master %>%
   group_by(crop, county, year = year(date)) %>%

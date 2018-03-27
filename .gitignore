@@ -5,6 +5,8 @@
 .Rproj.user
 
 # knitr cache directories
+*_files/
+/*cache/
 /*_cache/
 
 # knitr temporary files
@@ -15,3 +17,13 @@
 /input/
 /analysis/cache/
 /analysis/figures/
+/archive
+
+# Files with large binaries
+*.html
+*.xls
+*.xlsx
+
+# Other things that we don't want to track
+/input/*/
+/output/

@@ -31,7 +31,7 @@ From the USDA/NASS PDF reports:
 From the USDA/NASS reports, *most* production units are expressed in mass units, specifically 
 (short) Tons US (2000 lbs). When tonnes (metric) are used in  NASS reorts, I've seen them explicitly 
 specified as 'metric tons'. Other production units include: "Lbs/LBS/lbs" (pounds US), "Cwt/CWT/cwt" 
-(hundredweight, aka 100 pounds US), "Col/COL/col" (colonies, for apiary pollination fees), 
+(hundredweight, aka 100 pounds US), "Col/COL/col" (colonies, for apiary production 🐝), 
 "Each/EACH/each" (units, for certin products such as bee nuclei, queen bees, and turkey eggs for hatching), 
 "Cord/CORD/cord" (volumetric unit for timber) and "Thou/THOU/thou" (thousands of units, for nursery plants).
 
@@ -94,8 +94,9 @@ existing data frames.
 ```{r prepareAnalysis_rds}
 yield.paths <- list.files(path=yield.dir, pattern=".(csv)$", full.names=T)
 
-yield.master <- do.call("rbind", lapply(yield.paths, read_csv, col_types = cols(`Harvested Acres` = col_number(), 
-        Value = col_number())))
+yield.master <- do.call("rbind", lapply(yield.paths, read_csv, 
+                                        col_types = cols(`Harvested Acres` = col_number(), 
+                                                         Value = col_number())))
 
 rm(yield.dir, yield.paths)
 
@@ -204,7 +205,7 @@ yield.master <- yield.master %>%
 ## Associate harvested crops with CDL crops
 
 ## Summarize harvested acres statewide for comparison with landcover areas
-Here, we generate a list harvested acres for all years, fpr all counties (`County Code == 999`). 
+Here, we generate a list harvested acres for all years, for all counties (`County Code == 999`). 
 We save this file as `NASS_acres_state.csv`
 
 The key operation is `dplyr::outer_join()`, an operation that can be thought of as the union set.

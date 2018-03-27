@@ -11,7 +11,7 @@ knitr::opts_knit$set(echo = TRUE, root.dir = 'D:/lbooth/wfar', warning = TRUE, c
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-source("R/Kc.R")
+source("R/kc.R")
 source("R/eto.R")
 
 pkgTest("rgdal", "raster", "tools", "lubridate", "parallel")
@@ -22,7 +22,7 @@ rasterOptions(progress = "text", tmpdir = "B:/tmp", time = TRUE)
 
 ```{r importData}
 # ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
-ca_boundary.path <- "Input/SHAPEFILES/cnty24k09/cnty24k09_state_poly_s100.shp"
+ca_boundary.path <- "input/SHAPEFILES/cnty24k09/cnty24k09_state_poly_s100.shp"
 ppt.dir <- "input/PRISM"
 ppt.crs <- CRS("+init=epsg:4269")
 ```

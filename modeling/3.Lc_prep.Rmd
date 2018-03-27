@@ -154,7 +154,7 @@ rm(lc.paths.cleaned, lc.table.cleaned)
 ```
 
 ## 2.3 Warp Lc
-TODO Why do we use `gdalwarp` here again?
+We use `gdalwarp` to allign all of our datasets, with the same extent and same number of rows/columns.
 ```{r, eval=FALSE, include=FALSE}
 # This is a test run of the function to be applied to make sure that it works as expected
 gdalwarp_wrapper("bin/gdal/apps/gdalwarp.exe",

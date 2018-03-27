@@ -24,11 +24,11 @@ rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
 # ca_boundary defines the boundary for the area/(s) of analysis (includes counties)
 # ca_boundary <- readOGR("input/SHAPEFILES/cb_2014_CA_5m.shp", layer="cb_2014_CA_5m")
 ca.counties.path <- "output/ca_counties.tif"
-ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
 kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
 cwr.dir <- "output/cwr_calcs"
 ppt.dir <- "output/cleaned_inputs/PRISM_scaled_projected"
-lc.dir <- "output/cleaned_inputs/CDL_CA_WGS84_projected"
+lc.dir <- "output/cleaned_inputs/CDL_CA_projected"
 index.dir <- "output/intermediaries/county_lc_index/"
 main.crs <- CRS("+init=epsg:4269")
 ```
@@ -113,7 +113,7 @@ stopCluster(cl)
 
 ```{r calcETc}
 make_zone_sum <- function(abs_paths, index_path) {
-  z.table = zonal(raster(abs_paths), raster(index_path), "sum", progress = "text")
+  z.table = zonal(raster(abs_paths), raster(index_path), "sum", na.rm = TRUE, progress = "text")
   return(z.table)
 }
 
@@ -137,20 +137,26 @@ for (year.index in unique(year(cwr.table[["date"]]))) {
            
   dir.create("output/summaries/", recursive = TRUE, showWarnings = FALSE)
   saveRDS(z.table, paste0("output/summaries/", product_name, "_", year.index, ".rds"))
+  
   z.table <- Reduce(function(dtf1, dtf2) cbind(dtf1, dtf2[,2]), z.table)
-  colnames(z.table)[2:length(colnames(z.table))] <- seq(1,length(colnames(z.table))-1)
+  z.table <- cbind(szudzik_unpair(z.table[,1]), z.table[,-1])
+  colnames(z.table) <- 
+    c("crop", "county", seq(1,length(colnames(z.table))-2))
   write.csv(z.table, file = paste0("output/summaries/", product_name, "_", year.index, ".csv"))
 }
 stopCluster(cl)
 exe.stoptime <- Sys.time()
 print(paste("Began calculation at", exe.starttime, "and completed at", exe.stoptime))
+print(exe.stoptime - exe.starttime)
 ```
 
 "Began calculation at 2017-04-30 11:23:30 and completed at 2017-05-02 23:51:30" (2 days 12 hrs)
+For year 2010, "Began calculation at 2017-08-10 09:50:37 and completed at 2017-08-11 05:55:20"
+(It took 8.5 days to run on bootsy)
 
 ```{r calcPPT}
 make_zone_sum <- function(abs_paths, index_path) {
-  z.table = zonal(raster(abs_paths), raster(index_path), "sum", progress = "text")
+  z.table = zonal(raster(abs_paths), raster(index_path), "sum", na.rm = TRUE, progress = "text")
   return(z.table)
 }
 
@@ -185,6 +191,7 @@ for (year.index in unique(year(ppt.table[["date"]]))) {
 stopCluster(cl)
 exe.stoptime <- Sys.time()
 print(paste("Began calculation at", exe.starttime, "and completed at", exe.stoptime))
+print(exe.stoptime - exe.starttime)
 ```
 
 "Began calculation at 2017-05-03 08:46:20 and completed at 2017-05-05 14:52:31" (2 days, 6 hrs)

@@ -26,13 +26,10 @@ This worksheet leans heavily on `tidyverse` packages.
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
-        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", 
+        "cowplot", "viridis", "ggfittext", "treemapify",
+        "tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
         "rgdal", "devtools")
-install_github("wilkox/ggfittext")
-install_github("wilkox/treemapify")
-# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
-pkgTest("ggfittext", "treemapify")
 ggplot2::theme_set(theme_bw())
 ```
 ## Import data
@@ -63,7 +60,7 @@ harvested acres, value in USD), for the modeled crops.
 ```{r importData, message=FALSE, warning=FALSE, include=FALSE}
 cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
 roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
-ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
 ca.hr <- readOGR("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
 wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
 wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
@@ -234,8 +231,8 @@ ICC is still in active development, as of 2017.
 
 On the right, we use a log/log plot in order to examine the structure of crops on the low-end of WF,
 since a few, high-WF crops greately influence the scale.
-
-```{r plot2}
+## P2.1: BlueWF w/ FAO groups (linear and log scale)
+```{r plot2-1}
 local({
   
 wfb_icc <- wf.master.byFAO.wyear %>%
@@ -273,8 +270,8 @@ wfb_icc_log <- wf.master.byFAO.wyear %>%
   plot_grid(arrangeGrob(wfb_icc, wfb_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
 })
 ```
-# P2.5: CWR and PPT w/ FAO groups
-```{r plot2-5}
+## P2.2: CWR w/ FAO groups (linear and log scale)
+```{r plot2-2}
 local({
   
 cwr_icc <- wf.master.byFAO.wyear %>%
@@ -311,7 +308,10 @@ cwr_icc_log <- wf.master.byFAO.wyear %>%
 
   plot_grid(arrangeGrob(cwr_icc, cwr_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
 })
+```
 
+## P2.3: PPT w/ FAO groups (linear and log scale)
+```{r plot2-3}
 local({
   
 ppt_icc <- wf.master.byFAO.wyear %>%
@@ -349,6 +349,56 @@ ppt_icc_log <- wf.master.byFAO.wyear %>%
   plot_grid(arrangeGrob(ppt_icc, ppt_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
 })
 ```
+
+## P2.5.1: Blue WF and CWR w/ FAO groups (log scale)
+seq(65,78)
+```{r plot2-5-1}
+local({
+  
+cwr_icc_log <- wf.master.byFAO.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = cwr, color = FAO_shortgroup,
+                           shape = FAO_shortgroup), size=3) +
+  geom_line(mapping = aes(x = Year, y = cwr, color = FAO_shortgroup)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  scale_shape_manual(values=c(0:6,15:20,64)) +
+  annotation_logticks() +
+  labs(title = "Annual CWR by crop for 2008 - 2015 water years",
+       subtitle = ("Log 10 scale"),
+       x = "Water Year", y = "Annual CWR (m3)", 
+       color = "Crop Group", shape = "Crop Group") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none")
+
+wfb_icc_log <- wf.master.byFAO.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = wf.b, color = FAO_shortgroup,
+                           shape = FAO_shortgroup), size=3) +
+  geom_line(mapping = aes(x = Year, y = wf.b, color = FAO_shortgroup)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  scale_shape_manual(values=c(0:6,15:20,64)) +
+  annotation_logticks() +
+  labs(title = "Annual Blue WF by crop for 2008 - 2015 water years",
+       subtitle = ("Log 10 scale"),
+       x = "Water Year", y = "Annual Blue WF (m3/tonne)", 
+       color = "Crop Group", shape = "Crop Group") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none")
+
+  l1 <- get_legend(cwr_icc_log + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(cwr_icc_log, wfb_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
 
 # P3: Annual Blue WF, CWR by FAO groups
 

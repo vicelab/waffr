@@ -63,7 +63,7 @@ harvested acres, value in USD), for the modeled crops.
 ```{r importData, message=FALSE, warning=FALSE, include=FALSE}
 cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
 roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
-ca.counties <- read_sf("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
+ca.counties <- read_sf("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
 ca.hr <- read_sf("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
 wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
 wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
@@ -166,30 +166,38 @@ local({
   cty.wfb <- ca.counties.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = wf.b_avg), color = "blue") +
-    scale_fill_viridis(name = "wf.b (m3/tonne)", trans = "log", option = "magma", 
+    scale_fill_viridis(name = expression(paste("Blue WF: ", frac(m^3, tonne))), 
+                       trans = "log", option = "magma", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
-     labs(subtitle = "Mean Blue WF, log 10 scale")
+     labs(subtitle = "Mean Blue WF, log 10 scale") +
+     theme(legend.title=element_text(size=8))
 
   cty.wfg <- ca.counties.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = wf.g_avg), color = "darkgreen") +
-    scale_fill_viridis(name = "wf.g (m3/tonne)", trans = "log", option = "magma", 
+    scale_fill_viridis(name = expression(paste("Green WF: ", frac(m^3, tonne))),
+                       trans = "log", option = "magma", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
-     labs(subtitle = "Mean Green WF, log 10 scale")
+     labs(subtitle = "Mean Green WF, log 10 scale") +
+     theme(legend.title=element_text(size=8))
 
   cty.ppt <- ca.counties.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = ppt_avg), color = "white") +
-    scale_fill_distiller(name = "ppt (m3)", trans = "log", type = "seq", palette = "Purples", 
+    scale_fill_distiller(name = expression(paste("Blue WF: ", (m^3))),
+                         trans = "log", type = "seq", palette = "Blues", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
-     labs(subtitle = "Mean PPT, log 10 scale")
+     labs(subtitle = "Mean PPT, log 10 scale") +
+     theme(legend.title=element_text(size=8))
   
   cty.cwr <- ca.counties.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = cwr_avg), color = "white") +
-    scale_fill_viridis(name = "cwr (m3)", trans = "log", option = "viridis", 
+    scale_fill_viridis(name = expression(paste("CWR: ", (m^3))),
+                       trans = "log", option = "viridis", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
-     labs(subtitle = "Mean CWR, log 10 scale")
+     labs(subtitle = "Mean CWR, log 10 scale") +
+     theme(legend.title=element_text(size=8))
   
   t1 <- ggdraw() + draw_label("Average annual statistics by-county for WY 08-15", 
                               fontface='bold')
@@ -206,28 +214,32 @@ local({
   hr.wfb <- ca.hr.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = wf.b_avg), color = "blue") +
-    scale_fill_viridis(name = "wf.b (m3/tonne)", trans = "log", option = "magma", 
+    scale_fill_viridis(name = expression(paste("Blue WF: ", frac(m^3, tonne))),
+                       trans = "log", option = "magma", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
      labs(subtitle = "Mean Blue WF, log 10 scale")
 
   hr.wfg <- ca.hr.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = wf.g_avg), color = "darkgreen") +
-    scale_fill_viridis(name = "wf.g (m3/tonne)", trans = "log", option = "magma", 
+    scale_fill_viridis(name = expression(paste("Green WF: ", frac(m^3, tonne))),
+                       trans = "log", option = "magma", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
      labs(subtitle = "Mean Green WF, log 10 scale")
 
   hr.ppt <- ca.hr.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = ppt_avg), color = "white") +
-    scale_fill_distiller(name = "ppt (m3)", trans = "log", type = "seq", palette = "Purples", 
+    scale_fill_distiller(name =  expression(paste("PPT: ", (m^3))),
+                         trans = "log", type = "seq", palette = "Purples", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
      labs(subtitle = "Mean PPT, log 10 scale")
   
   hr.cwr <- ca.hr.allwy %>%
     ggplot() +
     geom_sf(mapping = aes(fill = cwr_avg), color = "white") +
-    scale_fill_viridis(name = "cwr (m3)", trans = "log", option = "viridis", 
+    scale_fill_viridis(name =  expression(paste("CWR: ", (m^3))),
+                       trans = "log", option = "viridis", 
                        labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
      labs(subtitle = "Mean CWR, log 10 scale")
   
