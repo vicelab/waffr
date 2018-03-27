@@ -57,28 +57,28 @@ calculateKcDaily <- function(t, crop) {
   # TODO: Refactor into cases
   # TODO: Use interpolation function to allow for different smoothers
   fKc <- ifelse(t < crop[["t_a.1"]], 0,
-                ifelse(t >= crop[["t_a.1"]] & t <= crop[["t_b.1"]],  crop[["Kc AB"]], 
-                       ifelse(t > crop[["t_b.1"]] & t < crop[["t_c.1"]],  
-                              crop[["Kc AB"]] + round(as.numeric(t - crop[["t_b.1"]], units = "days") * 
-                                                        ((crop[["Kc CD"]] - crop[["Kc AB"]]) / as.numeric((crop[["t_c.1"]] - crop[["t_b.1"]]), units = "days"))),
-                              ifelse(t >= crop[["t_c.1"]] & t <= crop[["t_d.1"]],  crop[["Kc CD"]],
-                                     ifelse(t > crop[["t_d.1"]] & t < crop[["t_e.1"]], 
-                                            crop[["Kc CD"]] + round(as.numeric(t - crop[["t_d.1"]], units = "days") * 
-                                                                      ((crop[["Kc E"]] - crop[["Kc CD"]]) / as.numeric((crop[["t_e.1"]] - crop[["t_d.1"]]), units = "days"))),
-                                            ifelse(t == crop[["t_e.1"]], crop[["Kc E"]], 0))))))
+  ifelse(t >= crop[["t_a.1"]] & t <= crop[["t_b.1"]],  crop[["Kc AB"]], 
+  ifelse(t > crop[["t_b.1"]] & t < crop[["t_c.1"]],  
+         crop[["Kc AB"]] + round(as.numeric(t - crop[["t_b.1"]], units = "days") * 
+         ((crop[["Kc CD"]] - crop[["Kc AB"]]) / as.numeric((crop[["t_c.1"]] - crop[["t_b.1"]]), units = "days"))),
+  ifelse(t >= crop[["t_c.1"]] & t <= crop[["t_d.1"]],  crop[["Kc CD"]],
+  ifelse(t > crop[["t_d.1"]] & t < crop[["t_e.1"]], 
+         crop[["Kc CD"]] + round(as.numeric(t - crop[["t_d.1"]], units = "days") * 
+         ((crop[["Kc E"]] - crop[["Kc CD"]]) / as.numeric((crop[["t_e.1"]] - crop[["t_d.1"]]), units = "days"))),
+  ifelse(t == crop[["t_e.1"]], crop[["Kc E"]], 0))))))
   
   # Only execute next calc if dual crop parameters exist
   if (!is.na(crop[["t_a.2"]])) {
     fKc2 <- ifelse(t < crop[["t_a.2"]], 0,
-                   ifelse(t >= crop[["t_a.2"]] & t <= crop[["t_b.2"]],  crop[["2nd Kc AB"]], 
-                          ifelse(t > crop[["t_b.2"]] & t < crop[["t_c.2"]], 
-                                 crop[["2nd Kc AB"]] + round(as.numeric(t - crop[["t_b.2"]], units = "days") * 
-                                                               ((crop[["2nd Kc CD"]] - crop[["2nd Kc AB"]]) / as.numeric((crop[["t_c.2"]] - crop[["t_b.2"]]), units = "days"))),
-                                 ifelse(t >= crop[["t_c.2"]] & t <= crop[["t_d.2"]], crop[["2nd Kc CD"]],
-                                        ifelse(t > crop[["t_d.2"]] & t < crop[["t_e.2"]],  
-                                               crop[["2nd Kc CD"]] + round(as.numeric(t - crop[["t_d.2"]], units = "days") * 
-                                                                             ((crop[["2nd Kc E"]] - crop[["2nd Kc CD"]]) / as.numeric((crop[["t_e.2"]] - crop[["t_d.2"]]), units = "days"))),
-                                               ifelse(t == crop[["t_e.2"]], crop[["2nd Kc E"]], 0))))))
+    ifelse(t >= crop[["t_a.2"]] & t <= crop[["t_b.2"]],  crop[["2nd Kc AB"]], 
+    ifelse(t > crop[["t_b.2"]] & t < crop[["t_c.2"]], 
+           crop[["2nd Kc AB"]] + round(as.numeric(t - crop[["t_b.2"]], units = "days") * 
+           ((crop[["2nd Kc CD"]] - crop[["2nd Kc AB"]]) / as.numeric((crop[["t_c.2"]] - crop[["t_b.2"]]), units = "days"))),
+    ifelse(t >= crop[["t_c.2"]] & t <= crop[["t_d.2"]], crop[["2nd Kc CD"]],
+    ifelse(t > crop[["t_d.2"]] & t < crop[["t_e.2"]],  
+           crop[["2nd Kc CD"]] + round(as.numeric(t - crop[["t_d.2"]], units = "days") * 
+           ((crop[["2nd Kc E"]] - crop[["2nd Kc CD"]]) / as.numeric((crop[["t_e.2"]] - crop[["t_d.2"]]), units = "days"))),
+    ifelse(t == crop[["t_e.2"]], crop[["2nd Kc E"]], 0))))))
     
     # TEST: for overlap between crop 1 and crop 2
     # DRY: This test should occur when CDL.Kc.LUT is imported.

@@ -1,0 +1,137 @@
+---
+title: "Figures: 2008-2015 averages by county"
+author: "asmtry"
+output:
+  html_document:
+    css: base.css
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+  
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=10, fig.asp = 1.218, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
+        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+        "rgdal", "sf", "devtools")
+# As of July 2017, this worksheet uses `sf` features of ggplot that are currently under development
+devtools::install_github("tidyverse/ggplot2")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggplot2")
+ggplot2::theme_set(theme_bw())
+```
+
+## Import data
+
+`cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
+and the corresponding name and index number in the FAO Indicative Crop Classification (ICC 1.1).
+
+`roi.table` contains relations from the regions of interest used to aggregrate the WF, PPT, 
+and CWU calculations performed in steps 8-10. Here, the relation is the attribute table from a
+shapefile of California county political boundaries. Attributes include: county index, name, and
+corresponding DWR hydrologic region.
+
+`ca.counties` contains the shapefile, on which `roi.table` is based.
+
+`ca.hr` contains the shapefile of DWR hydrologic regions, for California.
+
+`wf.master.wyear` contains annual sums of cwr, ppt, etc, wf, and harvested tons/acres/USD 
+aggregrated by crop, county, and water year. It only includes the counties that have corresponding 
+entries in the County Ag Comissioners (CAC) annual yield reports. Counties that had modeled ag 
+production, without an accompanying entry in the CAC annual reports were omitted.
+
+`wf.master.cyear` contains the above, except aggregrated by calendar year (instead of water year). 
+This data set includes the extra year of 2007.
+
+`yield.master` contains all of the statistics reported by the CAC annual reports (production tons, 
+harvested acres, value in USD), for the modeled crops.
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+ca.counties <- read_sf("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
+ca.hr <- read_sf("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
+wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
+wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds")
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+# C1: Annual statewide water demand, by region
+
+Here, we sum all tallied quantities of harvested acres, tons in production, and value (USD)
+by county, over each calendar and water year.
+
+Note: `readr` initially recognizes these fields as integers. Some of these are large. Some
+yearly sums are too large for a 32-bit `<int>` so, we must be coerce them to double.
+```{r calc1}
+wf.master.bycounty.cyear <- wf.master.cyear %>%
+  mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(hvst.acres, prod.tons, val.usd), funs(sum(as.numeric(.), na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
+  `attr<-`("year_type", "calendar") %>%
+  `attr<-`("summary_type", "total")
+
+wf.master.bycounty.wyear <- wf.master.wyear %>%
+  mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(hvst.acres, prod.tons, val.usd), funs(sum(as.numeric(.), na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
+  `attr<-`("year_type", "calendar") %>%
+  `attr<-`("summary_type", "total")
+
+wf.master.byHR.wyear <- wf.master.wyear %>%
+  left_join(roi.table %>% 
+              select(NUM,`HR_NAME`),
+            by = c("roi.index" = "NUM")) %>%
+  mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
+  group_by(`HR_NAME`, Year) %>%
+  summarize_at(vars(hvst.acres, prod.tons, val.usd), funs(sum(as.numeric(.), na.rm = TRUE))) %>%
+  ungroup() %>%
+  `attr<-`("year_type", "water") %>%
+  `attr<-`("summary_type", "total") %>%
+  `attr<-`("summarized_by", "DWR-HR")
+```
+
+```{r calc2}
+ca.counties.wy <- ca.counties %>%
+  inner_join(wf.master.bycounty.wyear %>% 
+              select(roi.index, Year, hvst.acres, prod.tons, val.usd),
+            by = c("NUM" = "roi.index"))
+
+# ca.hr.wy <- ca.hr %>%
+#   inner_join(wf.master.bycounty.wyear %>%
+#               group_by(`HR_NAME`, Year) %>%
+#               summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))),
+#             by = c("HR_NAME" = "HR_NAME"))
+  
+```
+
+```{r}
+ca.counties.wy %>%
+  ggplot() +
+  geom_sf(mapping = aes(fill = hvst.acres), color = "white") +
+  facet_wrap(~Year, ncol = 3, dir = "h") +
+  scale_fill_viridis(name = "hvst acres", trans = "log", option = "viridis", 
+                     labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+  labs(title = "Annual Harvested Acres by county for 2008 - 2015 water years",
+       subtitle = "log10 scale")
+```

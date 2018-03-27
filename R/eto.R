@@ -25,5 +25,3 @@ tagAnomalous <- function(input.table, column.var, criteria) {
   return(output.tag)
 }
 
-
-
