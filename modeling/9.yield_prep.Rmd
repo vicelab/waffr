@@ -1,20 +1,32 @@
 ---
 title: "County Aggregations"
 author: "asmtry"
-output: html_document
+output: 
+  html_document: 
+    number_sections: yes
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
+knitr::opts_knit$set(echo = TRUE, warning = TRUE, collapse = TRUE)
+# Uncomment the following line to enable chunk caching.
 knitr::opts_chunk$set(cache=TRUE)
 ```
 
 This worksheet uses `tidyverse` packages, heavily.
 
+**NOTE** Make sure to set your working directory to the project root.
+In RStudio, this means set the `Knit Directory` to "Project Directory".
+
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-
 pkgTest("tidyverse", "rgdal", "lubridate", "tools")
+# Temporary workaround until write_csv gets fixed (https://github.com/tidyverse/readr/pull/765)
+options(digits = 22)
 ```
 
 # Meta-data (units)
@@ -61,10 +73,8 @@ yield.dir <- "input/YIELDS"
 kc.index <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")[,1:2]
 kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
 cdl_nass <- read_csv("output/tables/CDL_NASS.csv")
-counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_simple.shp")
-counties.index <- counties@data %>%
-  mutate_all(as.character) %>%
-  type_convert
+counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
+counties.index <- read_csv("output/ca_counties_attributes.csv")
 ```
 
 If you end up doing lots of unit conversions, it may make sense to use a dedicated library/package,
@@ -102,10 +112,6 @@ rm(yield.dir, yield.paths)
 
 # Make the `Units` column lowercase to make things consistent
 yield.master[["Unit"]] <- tolower(yield.master[["Unit"]])
-
-counties.index <- counties@data %>%
-  mutate_all(as.character) %>%
-  type_convert
 ```
 
 # Explore unique values in harvest dataset
@@ -139,12 +145,12 @@ as a SQL inner join. First, we produce a list of unique (`dplyr::distinct`) crop
 list of names (performing the inner join).
 
 ```{r prepCommonCrops}
-# TODO: For fun, figure out how to do this using just one (compound) statement using dplyr::inner_join()
+# TODO: Use dplyr::inner_join() instead of Reduce(intersect)
 common.crops <- yield.master %>%
   group_by(Year) %>%
   distinct(`Crop Name`) %>%
   summarize(cropname = list(`Crop Name`)) %>%
-  select(cropname) %>%
+  dplyr::select(cropname) %>%
   lapply(function(x) {(x)})
 
 common.crops <- Reduce(intersect, common.crops[["cropname"]])
@@ -186,14 +192,14 @@ yield.master <- yield.master %>%
 # Associate yield ROIs and crop categories with landcover ROIs and crop categories
 
 ## Associate counties from harvest record with landcover ROIs
-Here, we use `dplyr::inner_join` to join the county identifiers, (`counties.index["NUM"]`s  to the CAC master table, 
+Here, we use `dplyr::inner_join` to join the county identifiers, (`counties.index["r_index"]`s  to the CAC master table, 
 by matching county names.
-
+TODO: Replace `r_index` with `NUM` once we update `ca_counties.tif`
 ```{r}
 # Merge county identifiers
 yield.master <- yield.master %>%
-  left_join(counties.index[c("NAME_PCASE", "NUM")], by = c("County" = "NAME_PCASE")) %>%
-  rename(roi.index = NUM) %>%
+  left_join(counties.index[c("NAME_PCASE", "r_index")], by = c("County" = "NAME_PCASE")) %>%
+  rename(roi.index = r_index) %>%
   mutate(roi.index = replace(`roi.index`, County == "Sum of Others", 991)) %>%
   mutate(roi.index = replace(`roi.index`, County == "State Totals", 999))
   
@@ -227,8 +233,11 @@ acres.state.master <- Reduce(function(...) full_join(..., by=c('Crop Name', 'Com
 colnames(acres.state.master) <- c("Crop Name", "Commodity Code", 2007:2015)
 # Order by Crop Name
 acres.state.master <- acres.state.master[order(acres.state.master$`Crop Name`),]
-# Write to csv
-write_csv(acres.state.master, "output/yields/NASS_acres_state.csv")
+#
+ Write to csv
+acres.state.master %>%
+  mutate_all(as.character) %>%                                       # TODO: Remove with readr:write_csv is fixed https://github.com/tidyverse/readr/pull/765
+  write_csv(., "output/yields/NASS_acres_state.csv")
 ```
 
 Why did we care about harvested acres? It serves as a point of comparison, and allows us to see if the acres harvested 
@@ -319,6 +328,7 @@ yield.lc.bycounty <- yield.lc.harvested %>%
   summarise(prod.tons = sum(Production), val.usd = sum(Value), hvst.acres = sum(`Harvested Acres`)) %>%
   mutate(prod.tonne = `prod.tons` * conv[["ton"]][["tonne"]]) %>%
   rename(cdl.value = cdl_value, cdl.name = cdl_name) %>%             # TODO: Replace with consistent naming
+  mutate_all(as.character) %>%                                       # TODO: Remove with readr:write_csv is fixed https://github.com/tidyverse/readr/pull/765
   write_csv(., "output/yields/NASS_summarized_bycounty.csv")
 
 yield.lc.bystate <- yield.lc.harvested %>%
@@ -327,6 +337,7 @@ yield.lc.bystate <- yield.lc.harvested %>%
   summarise(prod.tons = sum(Production), val.usd = sum(Value), hvst.acres = sum(`Harvested Acres`)) %>%
   mutate(prod.tonne = `prod.tons` * conv[["ton"]][["tonne"]]) %>%
   rename(cdl.value = cdl_value, cdl.name = cdl_name) %>%             # TODO: Replace with consistent naming
+  mutate_all(as.character) %>%                                       # TODO: Remove with readr:write_csv is fixed https://github.com/tidyverse/readr/pull/765
   write_csv(., "output/yields/NASS_summarized_bystate.csv")
 
 
