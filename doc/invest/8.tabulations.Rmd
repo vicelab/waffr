@@ -1,0 +1,339 @@
+---
+title: "Untitled"
+author: "asmtry"
+date: "March 22, 2018"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+#knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+pkgTest("tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
+        "rgdal", "devtools")
+ggplot2::theme_set(theme_bw())
+```
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+wf.master.wyear <- readRDS("output/wfs/wf_total_wyr.rds") %>%
+  mutate(wf.a = wf.b + wf.g)
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
+```
+
+# Using master table
+## Tabulate # of unique CDL classes by county
+```{r}
+# Calculate # of unique cdl classes by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+ucdl.all.bcounty <- wf.master.wyear %>%
+  group_by(County) %>%
+  summarize("All Years" = n_distinct(cdl.name)) %>%
+  arrange(County)
+
+# Calculate # of unique cdl classes by year across entire data set
+# Should return 8 values (2008-thru-2015)
+ucdl.all.byear <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize(Total = n_distinct(cdl.name)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate # of unique cdl classes across entire data set
+# Should return 1 value
+ucdl.all <- wf.master.wyear %>%
+  select(cdl.name) %>%
+  n_distinct()
+
+ucdl.wyear <- wf.master.wyear %>%
+  group_by(County, Year) %>%
+  summarize(uniquecrops = n_distinct(cdl.name)) %>%
+  spread(Year, uniquecrops) %>%
+  arrange(County) %>%
+  left_join(.,ucdl.all.bcounty, by = "County") %>%
+  rbind(c("County" = "Total", ucdl.all.byear,"All Years" = ucdl.all))
+
+kable(ucdl.wyear)
+```
+
+## Tabulate # of harvested acres by county
+```{r}
+# Calculate sum of harvested acres by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+all.area.county <- wf.master.wyear %>%
+  group_by(County) %>%
+  summarize("All Years" = sum(`hvst.acres`, na.rm = TRUE)) %>%
+  arrange(`All Years`) %>%
+  arrange(County)
+
+# Calculate sum of harvested acres by year across entire data set
+# Should return 8 values (2008-thru-2015)
+year.area <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize("Total" = sum(`hvst.acres`, na.rm = TRUE)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate sum of harvested acres across entire data set
+# Should return 1 value
+all.area <- wf.master.wyear %>%
+  select(`hvst.acres`) %>%
+  sum(na.rm = TRUE)
+
+year.area.county <- wf.master.wyear %>%
+  group_by(County, Year) %>%
+  summarize(totacres = sum(`hvst.acres`, na.rm = TRUE)) %>%
+  spread(Year, totacres) %>%
+  arrange(County) %>%
+  left_join(.,all.area.county, by = "County") %>%
+  rbind(c("County" = "Total", year.area,"All Years" = all.area))
+
+kable(year.area.county)
+
+ggplot(data.frame(x= 2008:2015, y=t(year.area))) + geom_line(aes(x,y)) + xlab("Water Year") + ylab("Harvested Acres") + theme_bw()
+```
+
+## Tabulate # of harvested acres by crop
+```{r}
+# Calculate sum of harvested acres by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+all.area.crop <- wf.master.wyear %>%
+  group_by(cdl.name) %>%
+  summarize("All Years" = sum(`hvst.acres`, na.rm = TRUE)) %>%
+  arrange(cdl.name)
+
+# Calculate sum of harvested acres by year across entire data set
+# Should return 8 values (2008-thru-2015)
+year.area <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize("Total" = sum(`hvst.acres`, na.rm = TRUE)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate sum of harvested acres across entire data set
+# Should return 1 value
+all.area <- wf.master.wyear %>%
+  select(`hvst.acres`) %>%
+  sum(na.rm = TRUE)
+
+year.area.crop <- wf.master.wyear %>%
+  group_by(cdl.name, Year) %>%
+  summarize(totacres = sum(`hvst.acres`, na.rm = TRUE)) %>%
+  spread(Year, totacres) %>%
+  arrange(cdl.name) %>%
+  left_join(.,all.area.crop, by = "cdl.name") %>%
+  rbind(c("cdl.name" = "Total", year.area,"All Years" = all.area))
+
+kable(year.area.crop)
+
+#ggplot(data.frame(x= 2008:2015, y=t(year.area))) + geom_line(aes(x,y)) + xlab("Water Year") + ylab("Harvested Acres") + theme_bw()
+```
+
+## Plot
+```{r}
+year.area.crop <- wf.master.wyear %>%
+  group_by(cdl.name, Year) %>%
+  summarize(totacres = sum(`hvst.acres`, na.rm = TRUE))
+
+year.area.crop %>%
+  ggplot() + 
+  geom_line(mapping = aes(x = Year, y = totacres, color = cdl.name))
+```
+
+# CWR
+## Tabulate cwr by crop
+```{r}
+# Calculate sum of harvested acres by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+all.cwr.crop <- wf.master.wyear %>%
+  group_by(cdl.name) %>%
+  summarize("All Years" = sum(`cwr`, na.rm = TRUE)) %>%
+  arrange(cdl.name)
+
+# Calculate sum of harvested acres by year across entire data set
+# Should return 8 values (2008-thru-2015)
+year.cwr <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize("Total" = sum(`cwr`, na.rm = TRUE)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate sum of harvested acres across entire data set
+# Should return 1 value
+all.cwr <- wf.master.wyear %>%
+  select(`cwr`) %>%
+  sum(na.rm = TRUE)
+
+year.cwr.crop <- wf.master.wyear %>%
+  group_by(cdl.name, Year) %>%
+  summarize(totacres = sum(`cwr`, na.rm = TRUE)) %>%
+  spread(Year, totacres) %>%
+  arrange(cdl.name) %>%
+  left_join(.,all.cwr.crop, by = "cdl.name") %>%
+  rbind(c("cdl.name" = "Total", year.cwr,"All Years" = all.cwr)) %>%
+  mutate_all(funs(signif(.,3)))
+
+kable(year.cwr.crop)
+```
+
+## Tabulate cwr by county
+```{r}
+# Calculate sum of harvested acres by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+all.cwr.county <- wf.master.wyear %>%
+  group_by(County) %>%
+  summarize("All Years" = sum(`cwr`, na.rm = TRUE)) %>%
+  arrange(`All Years`) %>%
+  arrange(County)
+
+# Calculate sum of harvested acres by year across entire data set
+# Should return 8 values (2008-thru-2015)
+year.cwr <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize("Total" = sum(`cwr`, na.rm = TRUE)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate sum of harvested acres across entire data set
+# Should return 1 value
+all.cwr <- wf.master.wyear %>%
+  select(`cwr`) %>%
+  sum(na.rm = TRUE)
+
+year.cwr.county <- wf.master.wyear %>%
+  group_by(County, Year) %>%
+  summarize(totacres = sum(`cwr`, na.rm = TRUE)) %>%
+  spread(Year, totacres) %>%
+  arrange(County) %>%
+  left_join(.,all.cwr.county, by = "County") %>%
+  rbind(c("County" = "Total", year.cwr,"All Years" = all.cwr)) %>%
+  mutate_all(funs(signif(.,3)))
+
+kable(year.cwr.county)
+
+#ggplot(data.frame(x= 2008:2015, y=t(year.cwr))) + geom_line(aes(x,y)) + xlab("Water Year") + ylab("Harvested Acres") + theme_bw()
+```
+
+# WF
+## Tabulate total WF by crop
+```{r}
+# Calculate sum of harvested acres by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+all.wfa.crop <- wf.master.wyear %>%
+  group_by(cdl.name) %>%
+  summarize("All Years" = sum(`wf.a`, na.rm = TRUE)) %>%
+  arrange(cdl.name)
+
+# Calculate sum of harvested acres by year across entire data set
+# Should return 8 values (2008-thru-2015)
+year.wfa <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize("Total" = sum(`wf.a`, na.rm = TRUE)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate sum of harvested acres across entire data set
+# Should return 1 value
+all.wfa <- wf.master.wyear %>%
+  select(`wf.a`) %>%
+  sum(na.rm = TRUE)
+
+year.wfa.crop <- wf.master.wyear %>%
+  group_by(cdl.name, Year) %>%
+  summarize(totacres = sum(`wf.a`, na.rm = TRUE)) %>%
+  spread(Year, totacres) %>%
+  arrange(cdl.name) %>%
+  left_join(.,all.wfa.crop, by = "cdl.name") %>%
+  rbind(c("cdl.name" = "Total", year.wfa,"All Years" = all.wfa)) %>%
+  mutate_all(funs(signif(.,3)))
+
+kable(year.wfa.crop)
+```
+
+## Tabulate total WF by county
+```{r}
+# Calculate sum of harvested acres by county across entire data set
+# Should return 57 values for 58 counties minus san francisco
+all.wfa.county <- wf.master.wyear %>%
+  group_by(County) %>%
+  summarize("All Years" = sum(`wf.a`, na.rm = TRUE)) %>%
+  arrange(`All Years`) %>%
+  arrange(County)
+
+# Calculate sum of harvested acres by year across entire data set
+# Should return 8 values (2008-thru-2015)
+year.wfa <- wf.master.wyear %>%
+  group_by(Year) %>%
+  summarize("Total" = sum(`wf.a`, na.rm = TRUE)) %>%
+  arrange(Year) %>%
+  spread(Year, Total)
+
+# Calculate sum of harvested acres across entire data set
+# Should return 1 value
+all.wfa <- wf.master.wyear %>%
+  select(`wf.a`) %>%
+  sum(na.rm = TRUE)
+
+year.wfa.county <- wf.master.wyear %>%
+  group_by(County, Year) %>%
+  summarize(totacres = sum(`wf.a`, na.rm = TRUE)) %>%
+  spread(Year, totacres) %>%
+  arrange(County) %>%
+  left_join(.,all.wfa.county, by = "County") %>%
+  rbind(c("County" = "Total", year.wfa,"All Years" = all.wfa)) %>%
+  mutate_all(funs(signif(.,3)))
+
+kable(year.wfa.county)
+
+#ggplot(data.frame(x= 2008:2015, y=t(year.cwr))) + geom_line(aes(x,y)) + xlab("Water Year") + ylab("Harvested Acres") + theme_bw()
+```
+
+# Using County Ag Comissioners' Reports
+Read in `NASS_acres_state.csv`, which is generated in `9.yield_prep.Rmd`.
+This file generates a list of harvested acres for all years, for all counties, 
+for all commodity codes as specified by the CAC reports (were `County Code == 999`).
+```{r}
+acres.state.nass <- read_csv("output/yields/NASS_acres_state.csv") %>%
+  select(`2008`:`2015`) %>%
+  summarize_all(sum,na.rm = TRUE)
+```
+
+
+
+# Generate CDL-CAC relation table
+Read in `common.acres.csv`, which is a manually generated file which contains
+relations between the CAC commoditiy categories and the CDL landcover classes.
+```{r}
+read_csv("output/tables/CDL_NASS.csv") %>%
+  filter(!is.na(cdl_name)) %>%
+  mutate(`Crop Name` = str_to_title(`Crop Name`)) %>%
+  group_by(`cdl_name`) %>%
+  mutate(cac_classes = paste(`Crop Name`, collapse = ", ")) %>%
+  distinct(cdl_name, cac_classes) %>%
+  kable()
+```
+
+# Generate CDL-FAO relation table
+Read in `common.acres.csv`, which is a manually generated file which contains
+relations between the FAO Indicative Crop Classification and the CDL landcover 
+classes.
+```{r}
+read_csv("input/TABLES/cdl_crops.csv") %>%
+  filter(!is.na(FAO_title)) %>%
+  group_by(`FAO_title`) %>%
+  mutate(FAO_crops = paste(`cdl_name`, collapse = ", ")) %>%
+  distinct(FAO_title, FAO_crops) %>%
+  kable()
+```

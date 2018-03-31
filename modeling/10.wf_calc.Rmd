@@ -1,20 +1,30 @@
 ---
 title: "County Aggregations"
 author: "asmtry"
-output: html_document
+output: 
+  html_document: 
+    number_sections: yes
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), warning = TRUE, collapse = TRUE)
-#knitr::opts_chunk$set(cache=TRUE)
+knitr::opts_knit$set(echo = TRUE, warning = TRUE, collapse = TRUE)
+# Uncomment the following line to enable chunk caching.
+knitr::opts_chunk$set(cache=TRUE)
 ```
 
-This worksheet leans heavily on `tidyverse` packages.
+This worksheet uses `tidyverse` packages, heavily.
+
+**NOTE** Make sure to set your working directory to the project root.
+In RStudio, this means set the `Knit Directory` to "Project Directory".
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-
-pkgTest("tidyverse", "lubridate", "tools", "readr")
+pkgTest("tidyverse", "lubridate", "tools")
 ```
 
 In the previous steps we:

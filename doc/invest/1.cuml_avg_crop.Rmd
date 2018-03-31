@@ -12,10 +12,10 @@ output:
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
-knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
-                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
-                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
 knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
 options(width = 120)
 ```
@@ -26,15 +26,13 @@ This worksheet leans heavily on `tidyverse` packages.
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
-        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", 
+        "cowplot", "viridis", "ggfittext", "treemapify",
+        "tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
         "rgdal", "devtools")
-install_github("wilkox/ggfittext")
-install_github("wilkox/treemapify")
-# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
-pkgTest("ggfittext", "treemapify")
 ggplot2::theme_set(theme_bw())
 ```
+
 ## Import data
 
 `cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
@@ -98,7 +96,8 @@ the by-year summary notebook).
 
 ```{r cleanData}
 wf.master.wyear <- wf.master.wyear %>%
-  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009)) %>%
+  filter(!(`cdl.name` == "Mint" & `County` == "Shasta" & `Year` == 2011))
 ```
 
 # C1: Average statewide water demand *for all* years, by crop
@@ -108,9 +107,9 @@ Then, we average all of the yearly sums, to produce an "average year" value, for
 ```{r calc1}
 wf.master.allcrop.cyear <- wf.master.cyear %>%
   group_by(cdl.value, cdl.name, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres), funs(sum(., na.rm = TRUE))) %>%
   group_by(cdl.value, cdl.name) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres), funs(avg = "mean")) %>%
   left_join(cdl.table %>% select(value,`FAO_shortgroup`),
             by = c("cdl.value" = "value")) %>%
   ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
@@ -119,9 +118,9 @@ wf.master.allcrop.cyear <- wf.master.cyear %>%
 
 wf.master.allcrop.wyear <- wf.master.wyear %>%
   group_by(cdl.value, cdl.name, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres), funs(sum(., na.rm = TRUE))) %>%
   group_by(cdl.value, cdl.name) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres), funs(avg = "mean")) %>%
   left_join(cdl.table %>% select(value,`FAO_shortgroup`),
             by = c("cdl.value" = "value")) %>%
   ungroup() %>%
@@ -358,7 +357,7 @@ wf.master.allcrop.wyear %>%
                     place = "centre", grow = TRUE) +
   scale_fill_viridis(trans = "log", option = "viridis", labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
   labs(title = "Mean Blue WF and CWR by crop for 2008 - 2015 water years",
-       subtitle = "(CWU expressed as proportional areas, Blue WF expressed log10 fill scale)",
+       subtitle = "(CWR expressed as proportional areas, Blue WF expressed logarithmic color scale)",
        fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
   theme(legend.text=element_text(size=10),
         legend.title=element_text(size=10))
@@ -366,20 +365,40 @@ wf.master.allcrop.wyear %>%
 wf.master.allcrop.wyear %>%
   ggplot(mapping = aes(area = cwr_avg, fill = wf.b_avg, 
                      label = cdl.name, subgroup = FAO_shortgroup)) +
-  geom_treemap() +
-  geom_treemap_subgroup_border() +
-  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
-                             colour = "black", fontface = "italic", min.size = 0) +
-  geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
-  scale_fill_viridis(trans = "log", option = "viridis", labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
-  labs(title = "Mean Blue WF and CWR by crop for 2008 - 2015 water years",
-       subtitle = "(CWU expressed as proportional areas, Blue WF expressed log10 fill scale)",
-       fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
-  theme(legend.text=element_text(size=10),
-        legend.title=element_text(size=10))
+    geom_treemap() +
+    geom_treemap_subgroup_border() +
+    geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
+                               colour = "black", fontface = "italic", min.size = 0) +
+    geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
+    scale_fill_viridis(trans = "log", option = "viridis", 
+                       labels = function(x) format(10^ceiling(log10(x))/1, scientific = TRUE))  +
+    labs(title = "Mean Blue WF and CWR by crop for 2008 - 2015 water years",
+       subtitle = "(CWR expressed as proportional areas, Blue WF expressed logarithmic color scale)",
+         fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
+    theme(legend.text=element_text(size=10),
+          legend.title=element_text(size=10))
 
   # l1 <- get_legend(bwf_cwu + guides(fill = guide_legend()) + theme(legend.position="bottom"))
   # plot_grid(arrangeGrob(bwf_cwu, bwf_cwu_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .2))
+```
+
+
+```{r}
+wf.master.allcrop.wyear %>%
+  ggplot(mapping = aes(area = hvst.acres_avg, fill = wf.b_avg, 
+                     label = cdl.name, subgroup = FAO_shortgroup)) +
+    geom_treemap() +
+    geom_treemap_subgroup_border() +
+    geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
+                               colour = "black", fontface = "italic", min.size = 0) +
+    geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
+    scale_fill_viridis(trans = "log", option = "viridis", 
+                       labels = function(x) format(10^ceiling(log10(x))/1, scientific = TRUE))  +
+    labs(title = "Mean Blue WF and harvested acres by crop for 2008 - 2015 water years",
+       subtitle = "(Harvested acres expressed as proportional areas, Blue WF expressed logarithmic color scale)",
+         fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
+    theme(legend.text=element_text(size=10),
+          legend.title=element_text(size=10))
 ```
 
 # T1: Table, Average CWU (AF and TAF)
@@ -408,13 +427,9 @@ cwu.sum %>%
 ```
 
 
-# T1: Table, Average CWU (AF and TAF)
+# T2: Table, Average CWU (AF and TAF)
 
-The following is a tabulation the average CWU in acre-feet (AF) and thousand-acre-feet (TAF)
-for comparison to other tallies of statewide water use. Be aware that these values represent
-the *average* of yearly sums for each October-September period, from 2008-2015.
-
-```{r table1}
+```{r table1wf}
 # For displaying hundreds w/o scientific notation in html table
 options("scipen"=100, "digits"=4)
 # For fancy html tables

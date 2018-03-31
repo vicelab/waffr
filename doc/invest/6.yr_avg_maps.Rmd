@@ -12,11 +12,11 @@ output:
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
-knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
-                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
-                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
-knitr::opts_chunk$set(fig.width=10, fig.asp = 1.218, warning = FALSE)
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
 options(width = 120)
 ```
 
@@ -25,8 +25,9 @@ This worksheet leans heavily on `tidyverse` packages.
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
-        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", 
+        "cowplot", "viridis", "ggfittext", "treemapify",
+        "tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
         "rgdal", "sf", "devtools")
 # As of July 2017, this worksheet uses `sf` features of ggplot that are currently under development
 devtools::install_github("tidyverse/ggplot2")
@@ -62,7 +63,7 @@ harvested acres, value in USD), for the modeled crops.
 
 ```{r importData, message=FALSE, warning=FALSE, include=FALSE}
 cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
-roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+roi.table <- read_csv("output/ca_counties_attributes.csv")
 ca.counties <- read_sf("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
 ca.hr <- read_sf("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
 wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
@@ -98,7 +99,8 @@ the by-year summary notebook).
 
 ```{r cleanData}
 wf.master.wyear <- wf.master.wyear %>%
-  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009)) %>%
+  filter(!(`cdl.name` == "Mint" & `County` == "Shasta" & `Year` == 2011))
 ```
 
 # C1: Annual statewide water demand, by county
@@ -109,8 +111,8 @@ wf.master.bycounty.cyear <- wf.master.cyear %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(roi.index, County, Year) %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
-  left_join(roi.table %>% select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
   `attr<-`("year_type", "calendar") %>%
   `attr<-`("summary_type", "total")
@@ -119,16 +121,16 @@ wf.master.bycounty.wyear <- wf.master.wyear %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(roi.index, County, Year) %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
-  left_join(roi.table %>% select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
   `attr<-`("year_type", "calendar") %>%
   `attr<-`("summary_type", "total")
 
 wf.master.byHR.wyear <- wf.master.wyear %>%
   left_join(roi.table %>% 
-              select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+              select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(`HR_NAME`, Year) %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
@@ -165,8 +167,8 @@ do this join that does not result in repeated spatial data, but there may not. Â
 ```{r calc2}
 ca.counties.wy <- ca.counties %>%
   inner_join(wf.master.bycounty.wyear %>% 
-              select(roi.index, Year, cwr, ppt, et.b, et.g, wf.b, wf.g),
-            by = c("NUM" = "roi.index"))
+              select(County, Year, cwr, ppt, et.b, et.g, wf.b, wf.g),
+            by = c("NAME_PCASE" = "County"))
 
 ca.hr.wy <- ca.hr %>%
   inner_join(wf.master.bycounty.wyear %>%

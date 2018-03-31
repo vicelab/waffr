@@ -12,10 +12,10 @@ output:
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
-knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
-                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
-                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
 knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
 options(width = 120)
 ```
@@ -26,15 +26,13 @@ This worksheet leans heavily on `tidyverse` packages.
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
-        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", 
+        "cowplot", "viridis", "ggfittext", "treemapify",
+        "tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
         "rgdal", "devtools")
-install_github("wilkox/ggfittext")
-install_github("wilkox/treemapify")
-# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
-pkgTest("ggfittext", "treemapify")
-ggplot2::theme_set(theme_bw())
+ggplot2::theme_set(theme_bw(base_size = 11))
 ```
+
 ## Import data
 
 `cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
@@ -62,7 +60,7 @@ harvested acres, value in USD), for the modeled crops.
 
 ```{r importData, message=FALSE, warning=FALSE, include=FALSE}
 cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
-roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+roi.table <- read_csv("output/ca_counties_attributes.csv")
 ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
 ca.hr <- readOGR("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
 wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
@@ -98,7 +96,8 @@ the by-year summary notebook).
 
 ```{r cleanData}
 wf.master.wyear <- wf.master.wyear %>%
-  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009)) %>%
+  filter(!(`cdl.name` == "Mint" & `County` == "Shasta" & `Year` == 2011))
 ```
 
 # C1: Average statewide water demand *for all* years, by crop
@@ -107,32 +106,35 @@ Here, we sum all daily volumes of cwr, ppt, et, and wf by crop, over each calend
 Then, we average all of the yearly sums, to produce an "average year" value, for each parameter.
 ```{r calc1}
 wf.master.bycounty.cyear <- wf.master.cyear %>%
+  mutate(wf.a = wf.b + wf.g) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(roi.index, County, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
-  left_join(roi.table %>% select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres, prod.tonne, wf.a), funs(sum(., na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
   `attr<-`("year_type", "calendar") %>%
   `attr<-`("summary_type", "total")
 
 wf.master.bycounty.wyear <- wf.master.wyear %>%
+  mutate(wf.a = wf.b + wf.g) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(roi.index, County, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
-  left_join(roi.table %>% select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres, prod.tonne, wf.a), funs(sum(., na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   ungroup() %>%
   `attr<-`("year_type", "water") %>%
   `attr<-`("summary_type", "total")
 
 wf.master.byHR.wyear <- wf.master.wyear %>%
+  mutate(wf.a = wf.b + wf.g) %>%
   left_join(roi.table %>% 
-              select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+              select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(`HR_NAME`, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres, prod.tonne, wf.a), funs(sum(., na.rm = TRUE))) %>%
   ungroup() %>%
   `attr<-`("year_type", "water") %>%
   `attr<-`("summary_type", "total") %>%
@@ -146,9 +148,27 @@ $WF_{blue}$. The second plot identifies some of these counties by labling the to
 counties by $WF_{blue}$. Note that we're tagging entries in the top 99% *per year*, not the top 
 99% overall.
 
+# P1.1 Overall WF
+```{r}
+  wf.master.bycounty.wyear %>%
+    group_by(Year) %>%
+    mutate(percentile = percent_rank(wf.a)) %>%
+    ungroup() %>%
+    ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.a, color = County)) +
+    geom_line(mapping = aes(x = Year, y = wf.a, color = County)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    labs(title = "Overall annual WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "County Name") +
+    theme(legend.position = "bottom", legend.spacing.x=unit(1,"line"),
+          legend.title = element_blank(), legend.key.size = unit(.5, 'lines'),
+          legend.direction = 'horizontal', legend.key.width=unit(3,"line"),
+          axis.text.y = element_text(angle = 90))
+```
+
+
 ```{r plot1}
-# local({
-  # wfb <-
   wf.master.bycounty.wyear %>%
     ggplot() +
     geom_point(mapping = aes(x = Year, y = wf.b, color = County)) +
@@ -217,9 +237,7 @@ counties by $WF_{blue}$. Note that we're tagging entries in the top 99% *per yea
          color = "County Name") +
     guides(fill = "none", color = "none") +
     theme(axis.text.y = element_text(angle = 90))
-  
-  #plot_grid(arrangeGrob(wfb_vs_wfg, etb_vs_etg, ncol=1), nrow = 1)
-# })
+
 ```
 
 # P2: Annual Blue WF, CWR, and PPT, county-wise w/ Hydrologic Regions
@@ -228,6 +246,176 @@ We can also group counties by a classification based on location. Here, we are u
 classifications that align with the major drainage basins of California. These `Hydrologic Regions`
 correspond to drainage basins that are used for a variety of planning purposes and DWR programs,
 including the CA Water plan.
+
+# P2.1  Overall WF
+```{r}
+local({
+wf_icc <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.a)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.a, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.a, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    labs(title = "Overall annual WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+wf_icc_log <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.a)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.a, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.a, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(trans = "log10", labels = scales::comma,
+                       breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    annotation_logticks() +
+    labs(title = "Overall annual WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+  l1 <- get_legend(wf_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(wf_icc, wf_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+# P2.2  Blue WF
+```{r}
+local({
+wf_icc <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.a)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    labs(title = "Annual Blue WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+wf_icc_log <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.b)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(trans = "log10", labels = scales::comma,
+                       breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    annotation_logticks() +
+    labs(title = "Annual Blue WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+  l1 <- get_legend(wf_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(wf_icc, wf_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+# P2.3 Green WF
+```{r}
+local({
+wf_icc <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.a)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.g, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.g, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    labs(title = "Annual Green WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+wf_icc_log <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.b)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.g, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.g, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(trans = "log10", labels = scales::comma,
+                       breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    annotation_logticks() +
+    labs(title = "Annual Green WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+  l1 <- get_legend(wf_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(wf_icc, wf_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+# P2.4 Blue/Green WF
+```{r}
+local({
+wf1_icc <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.a)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.b, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    labs(title = "Annual Blue WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+wf2_icc <- wf.master.byHR.wyear %>%
+  group_by(Year) %>%
+  mutate(percentile = percent_rank(wf.a)) %>%
+  ungroup() %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.g, color = HR_NAME)) +
+    geom_line(mapping = aes(x = Year, y = wf.g, color = HR_NAME)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:2,5:6,15:19)) +
+    labs(title = "Annual Green WF by county for 2007 - 2015 calendar years",
+         x = "Calendar Year", y = "Annual WF (m3/tonne)", 
+         color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none")
+
+  l1 <- get_legend(wf1_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(wf1_icc, wf2_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
 
 On the right, we use a log/log plot in order to examine the structure of counties on the low-end of WF,
 since a few, high-WF counties greately influence the scale.
@@ -270,8 +458,9 @@ wfb_icc_log <- wf.master.byHR.wyear %>%
   plot_grid(arrangeGrob(wfb_icc, wfb_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
 })
 ```
-# P2.5: CWR and PPT w/ Hydrologic Regions
-```{r plot2-5}
+
+## P2.1: CWR w/ Hydrologic Regions
+```{r plot2-1}
 local({
   
 cwr_icc <- wf.master.byHR.wyear %>%
@@ -308,7 +497,10 @@ cwr_icc_log <- wf.master.byHR.wyear %>%
 
   plot_grid(arrangeGrob(cwr_icc, cwr_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
 })
+```
 
+## P2.2: PPT w/ Hydrologic Regions
+```{r plot 2-2}
 local({
   
 ppt_icc <- wf.master.byHR.wyear %>%
@@ -346,6 +538,88 @@ ppt_icc_log <- wf.master.byHR.wyear %>%
   plot_grid(arrangeGrob(ppt_icc, ppt_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
 })
 ```
+
+## P2.3: ET w/ Hydrologic Regions
+```{r plot 2-3}
+local({
+  
+etb_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = et.b, color = HR_NAME,
+                           shape = HR_NAME), size = 3) +
+  geom_line(mapping = aes(x = Year, y = et.b, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:2,5:6,15:19)) +
+  labs(title = "Annual Blue Evapotranspiration \nby county for 2008 - 2015 water years",
+       x = "Water Year", y = "Volumetric Crop Evapotranspiration (m3)", 
+       color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+etg_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = et.g, color = HR_NAME,
+                           shape = HR_NAME), size = 3) +
+  geom_line(mapping = aes(x = Year, y = et.g, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:2,5:6,15:19)) +
+  labs(title = "Annual Green Evapotranspiration \nby county for 2008 - 2015 water years",
+       x = "Water Year", y = "Volumetric Crop Evapotranspiration (m3)", 
+       color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+  l1 <- get_legend(etb_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(etb_icc, etg_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+
+## P2.4: CWR and PPT w/ Hydrologic Regions
+```{r plot 2-4}
+local({
+
+cwr_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = cwr, color = HR_NAME,
+                           shape = HR_NAME), size = 3) +
+  geom_line(mapping = aes(x = Year, y = cwr, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:2,5:6,15:19)) +
+  labs(title = "Annual CWR by county for 2008 - 2015 water years",
+       x = "Water Year", y = "Annual CWR (m3)", 
+       color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+ppt_icc <- wf.master.byHR.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = ppt, color = HR_NAME,
+                           shape = HR_NAME), size = 3) +
+  geom_line(mapping = aes(x = Year, y = ppt, color = HR_NAME)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:2,5:6,15:19)) +
+  labs(title = "Annual precipitation over irrigated crops\nby county for 2008 - 2015 water years",
+       x = "Water Year", y = "Annual PPT (m3)", 
+       color = "DWR Hydrologic\nRegion", shape = "DWR Hydrologic\nRegion") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+   theme(legend.position = "none")
+
+  l1 <- get_legend(cwr_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(cwr_icc, ppt_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
 
 # P3: Annual Blue WF, CWR by Hydrologic Regions
 
@@ -389,4 +663,41 @@ wf.master.bycounty.wyear %>%
       color = "County Name") +
   theme(axis.text.y = element_text(angle = 90), legend.position="none") +
   guides(fill = "none")
+```
+
+# C2: Percent increase/decrease
+## Harvested acres by FAO Group
+```{r}
+wf.master.byHR.wyear %>% 
+  group_by(HR_NAME) %>%
+  mutate(hvst.acres.pdiff = ((hvst.acres - lag(hvst.acres, order_by = Year, n = 7))/lag(hvst.acres, order_by = Year, n = 7))*100) %>%
+  mutate(hvst.acres.diff = (hvst.acres - lag(hvst.acres, order_by = Year, n = 7))) %>%
+  filter(!is.na(hvst.acres.pdiff)) %>%
+  select(HR_NAME, hvst.acres.pdiff, hvst.acres.diff) %>%
+  mutate_if(is.numeric, funs(round(.,0))) %>%
+  kable()
+```
+
+## Water footprint by FAO Group
+```{r}
+wf.master.byHR.wyear %>% 
+  group_by(HR_NAME) %>%
+  mutate(wf.a.pdiff = ((wf.a - lag(wf.a, order_by = Year, n = 7))/lag(wf.a, order_by = Year, n = 7))*100) %>%
+  mutate(wf.a.diff = (wf.a - lag(wf.a, order_by = Year, n = 7))) %>%
+  filter(!is.na(wf.a.pdiff)) %>%
+  select(HR_NAME, wf.a.pdiff, wf.a.diff) %>%
+  mutate_if(is.numeric, funs(round(.,0))) %>%
+  kable()
+```
+
+## Blue water footprint by FAO Group
+```{r}
+wf.master.byHR.wyear %>% 
+  group_by(HR_NAME) %>%
+  mutate(wf.b.pdiff = ((wf.b - lag(wf.b, order_by = Year, n = 7))/lag(wf.b, order_by = Year, n = 7))*100) %>%
+  mutate(wf.b.diff = (wf.b - lag(wf.b, order_by = Year, n = 7))) %>%
+  filter(!is.na(wf.b.pdiff)) %>%
+  select(HR_NAME, wf.b.pdiff, wf.b.diff) %>%
+  mutate_if(is.numeric, funs(round(.,0))) %>%
+  kable()
 ```

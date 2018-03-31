@@ -12,10 +12,10 @@ output:
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
-knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
-                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
-                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
 knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
 options(width = 120)
 ```
@@ -30,14 +30,15 @@ pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra",
         "cowplot", "viridis", "ggfittext", "treemapify",
         "tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
         "rgdal", "devtools")
-ggplot2::theme_set(theme_bw())
+ggplot2::theme_set(theme_bw(base_size = 11))
 ```
+
 ## Import data
 
 `cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
 and the corresponding name and index number in the FAO Indicative Crop Classification (ICC 1.1).
 
-`roi.table` contains relations from the regions of interest used to aggregrate the WF, PPT, 
+`roi.table` contains relations from the regions of interest used to aggregate the WF, PPT, 
 and CWU calculations performed in steps 8-10. Here, the relation is the attribute table from a
 shapefile of California county political boundaries. Attributes include: county index, name, and
 corresponding DWR hydrologic region.
@@ -47,11 +48,11 @@ corresponding DWR hydrologic region.
 `ca.hr` contains the shapefile of DWR hydrologic regions, for California.
 
 `wf.master.wyear` contains annual sums of cwr, ppt, etc, wf, and harvested tons/acres/USD 
-aggregrated by crop, county, and water year. It only includes the counties that have corresponding 
+aggregated by crop, county, and water year. It only includes the counties that have corresponding 
 entries in the County Ag Comissioners (CAC) annual yield reports. Counties that had modeled ag 
 production, without an accompanying entry in the CAC annual reports were omitted.
 
-`wf.master.cyear` contains the above, except aggregrated by calendar year (instead of water year). 
+`wf.master.cyear` contains the above, except aggregated by calendar year (instead of water year). 
 This data set includes the extra year of 2007.
 
 `yield.master` contains all of the statistics reported by the CAC annual reports (production tons, 
@@ -69,9 +70,9 @@ yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv")
 
 ## Create some functions for commonly used summary statistics
 
-Typially in a boxplot, outliers are marked as values that fall outside of 1.5 times the interquartile range 
-avove and below the 25% and 75% quantiles. `is_extreme()` is a function that we define below, that applys the
-same criteria and returns TRUE if the value is a suspected outlier/extreme falue, and false otherwise.
+Typically in a boxplot, outliers are marked as values that fall outside of 1.5 times the interquartile range 
+above and below the 25% and 75% quantiles. `is_extreme()` is a function that we define below, that applys the
+same criteria and returns TRUE if the value is a suspected outlier/extreme value, and false otherwise.
 
 ```{r summaryFuns}
 is_extreme <- function(series) {
@@ -87,15 +88,18 @@ is_extreme <- function(series) {
 
 ## Clean erronious observations
 
-Here, we clean obviously erronious observations.
+Here, we clean obviously erroneous observations.
 
-I think the 2009 Riverside CAC survey severly under-reports the "Oats" category to the point that
+I think the 2009 Riverside CAC survey severely under-reports the "Oats" category to the point that
 it makes the "Oats" water footprint blow up (several orders of magnitude higher than baseline, see
 the by-year summary notebook).
 
+Same with 2011 Shasta prod.tons for Mint.
+
 ```{r cleanData}
 wf.master.wyear <- wf.master.wyear %>%
-  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009)) %>%
+  filter(!(`cdl.name` == "Mint" & `County` == "Shasta" & `Year` == 2011))
 ```
 
 # C1: Average statewide water demand *for all* years, by crop
@@ -104,9 +108,10 @@ Here, we sum all daily volumes of cwr, ppt, et, and wf by crop, over each calend
 Then, we average all of the yearly sums, to produce an "average year" value, for each parameter.
 ```{r calc1}
 wf.master.bycrop.cyear <- wf.master.cyear %>%
+  mutate(wf.a = wf.b + wf.g) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(cdl.value, cdl.name, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres, prod.tonne, wf.a), funs(sum(., na.rm = TRUE))) %>%
   left_join(cdl.table %>% select(value,`FAO_shortgroup`),
             by = c("cdl.value" = "value")) %>%
   ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
@@ -114,9 +119,10 @@ wf.master.bycrop.cyear <- wf.master.cyear %>%
   `attr<-`("summary_type", "total")
 
 wf.master.bycrop.wyear <- wf.master.wyear %>%
+  mutate(wf.a = wf.b + wf.g) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(cdl.value, cdl.name, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres, prod.tonne, wf.a), funs(sum(., na.rm = TRUE))) %>%
   left_join(cdl.table %>% select(value,`FAO_shortgroup`),
             by = c("cdl.value" = "value")) %>%
   ungroup() %>%
@@ -124,12 +130,13 @@ wf.master.bycrop.wyear <- wf.master.wyear %>%
   `attr<-`("summary_type", "total")
 
 wf.master.byFAO.wyear <- wf.master.wyear %>%
+  mutate(wf.a = wf.b + wf.g) %>%
   left_join(cdl.table %>% 
               select(value,`FAO_shortgroup`),
             by = c("cdl.value" = "value")) %>%
   mutate(Year = as.Date(sprintf("%s-01-01", Year), format="%F")) %>%
   group_by(FAO_shortgroup, Year) %>%
-  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g, hvst.acres, prod.tonne, wf.a), funs(sum(., na.rm = TRUE))) %>%
   ungroup() %>%
   `attr<-`("year_type", "water") %>%
   `attr<-`("summary_type", "total") %>%
@@ -139,7 +146,7 @@ wf.master.byFAO.wyear <- wf.master.wyear %>%
 # P1: Annual Blue WF, CWR, and PPT, crop-wise
 
 It appears that there are a fair number of crops that are significantly greater than the median
-$WF_{blue}$. The second plot identifies some of these crops by labling the top 99th percentile 
+$WF_{blue}$. The second plot identifies some of these crops by labeling the top 99th percentile 
 crops by $WF_{blue}$. Note that we're tagging entries in the top 99% *per year*, not the top 
 99% overall.
 
@@ -162,15 +169,17 @@ crops by $WF_{blue}$. Note that we're tagging entries in the top 99% *per year*,
   wf.master.bycrop.wyear %>%
     group_by(Year) %>%
     mutate(percentile = percent_rank(wf.b)) %>%
+    ungroup() %>%
     ggplot() +
     geom_point(mapping = aes(x = Year, y = wf.b, color = cdl.name)) +
+    geom_line(mapping = aes(x = Year, y = wf.b, color = cdl.name)) +
     geom_label_repel(mapping = aes(x = Year, y = wf.b, 
                                    label = ifelse(percentile > 0.99, cdl.name, NA), 
                                    fill = cdl.name), 
                      color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
                      point.padding = unit(0.5, "lines"), na.rm = TRUE) +
     scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
-    labs(title = "Annualv WF by crop for 2008 - 2015 water years",
+    labs(title = "Annual Blue WF by crop for 2008 - 2015 water years",
          subtitle = "Top 1% (per year) WF crops labled",
          x = "Water Year", y = "Annual Blue WF (m3/tonne)", 
          color = "Crop Name") +
@@ -181,8 +190,10 @@ crops by $WF_{blue}$. Note that we're tagging entries in the top 99% *per year*,
   wf.master.bycrop.wyear %>%
     group_by(Year) %>%
     mutate(percentile = percent_rank(cwr)) %>%
+    ungroup() %>%
     ggplot() +
     geom_point(mapping = aes(x = Year, y = cwr, color = cdl.name)) +
+    geom_line(mapping = aes(x = Year, y = cwr, color = cdl.name)) +
     geom_label_repel(mapping = aes(x = Year, y = cwr, 
                                    label = ifelse(percentile > 0.95, cdl.name, NA), 
                                    fill = cdl.name), 
@@ -200,15 +211,37 @@ crops by $WF_{blue}$. Note that we're tagging entries in the top 99% *per year*,
   wf.master.bycrop.wyear %>%
     group_by(Year) %>%
     mutate(percentile = percent_rank(ppt)) %>%
+    ungroup() %>%
     ggplot() +
     geom_point(mapping = aes(x = Year, y = ppt, color = cdl.name)) +
+    geom_line(mapping = aes(x = Year, y = ppt, color = cdl.name)) +
     geom_label_repel(mapping = aes(x = Year, y = ppt, 
-                                   label = ifelse(percentile > 0.97, cdl.name, NA), 
+                                   label = ifelse(percentile > 0.95, cdl.name, NA), 
                                    fill = cdl.name), 
                      color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
                      point.padding = unit(0.5, "lines"), na.rm = TRUE) +
     scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
     labs(title = "Annual precipitation by crop for 2008 - 2015 water years",
+         subtitle = "Top 3% (per year) PPT crops labled",
+         x = "Water Year", y = "Annual PPT (m3)", 
+         color = "Crop Name") +
+    guides(fill = "none", color = "none") +
+    theme(axis.text.y = element_text(angle = 90))
+  
+  # hvst.acres.labeled <
+  wf.master.bycrop.wyear %>%
+    group_by(Year) %>%
+    mutate(percentile = percent_rank(hvst.acres)) %>%
+    ungroup() %>%
+    ggplot() +
+    geom_line(mapping = aes(x = Year, y = hvst.acres, color = cdl.name)) +
+    geom_label_repel(mapping = aes(x = Year, y = hvst.acres, 
+                                   label = ifelse(percentile > 0.97, cdl.name, NA), 
+                                   fill = cdl.name), 
+                     color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                     point.padding = unit(0.5, "lines"), na.rm = TRUE) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    labs(title = "Annual harvested acres by crop for 2008 - 2015 water years",
          subtitle = "Top 3% (per year) PPT crops labled",
          x = "Water Year", y = "Annual PPT (m3)", 
          color = "Crop Name") +
@@ -226,11 +259,11 @@ to crop genotypic similarity), horticultural (related to the plant's cultivation
 (related to crop value or markets), or otherwise. 
 
 Let's color crops by the FAO Indicative Crop Classification (ICC 1.1), which groups crops 
-according to  growing cycle (row vs perennial), crop genus, and product type. Note: that the 
+according to growing cycle (row vs perennial), crop genus, and product type. Note: that the 
 ICC is still in active development, as of 2017.
 
 On the right, we use a log/log plot in order to examine the structure of crops on the low-end of WF,
-since a few, high-WF crops greately influence the scale.
+since a few, high-WF crops greatly influence the scale.
 ## P2.1: BlueWF w/ FAO groups (linear and log scale)
 ```{r plot2-1}
 local({
@@ -350,25 +383,71 @@ ppt_icc_log <- wf.master.byFAO.wyear %>%
 })
 ```
 
+## P2.4: Acres and Yields w/ FAO groups (linear and log scale)
+```{r plot2-4-1}
+local({
+hvs_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = hvst.acres, color = FAO_shortgroup,
+                             shape = FAO_shortgroup), size = 3) +
+    geom_line(mapping = aes(x = Year, y = hvst.acres, color = FAO_shortgroup)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values=c(0:6,15:20,64,-0x25D0)) +
+    labs(title = "Annual Harvested Acres by crop for 2008 - 2015 water years",
+         subtitle = "Linear scae",
+         x = "Water Year", y = "Annual Harvested Area (acres)", 
+         color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+    guides(line = "none") +
+    theme(legend.position = "none",
+          plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+hvs_icc_log <- wf.master.byFAO.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = hvst.acres, color = FAO_shortgroup,
+                           shape = FAO_shortgroup), size = 3) +
+  geom_line(mapping = aes(x = Year, y = hvst.acres, color = FAO_shortgroup)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(trans = "log10", labels = scales::comma,
+                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  scale_shape_manual(values=c(0:6,15:20,64,-0x25D0)) +
+  annotation_logticks() +
+  labs(title = "Annual Harvested Acres by crop for 2008 - 2015 water years",
+       subtitle = "Logarithmic scale",
+       x = "Water Year", y = "Annual Harvested Area (acres)", 
+       color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none",
+        plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+  l1 <- get_legend(hvs_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(hvs_icc, hvs_icc_log, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
 ## P2.5.1: Blue WF and CWR w/ FAO groups (log scale)
-seq(65,78)
 ```{r plot2-5-1}
 local({
   
 cwr_icc_log <- wf.master.byFAO.wyear %>%
   ggplot() +
   geom_point(mapping = aes(x = Year, y = cwr, color = FAO_shortgroup,
-                           shape = FAO_shortgroup), size=3) +
+                           shape = FAO_shortgroup), size = 3) +
   geom_line(mapping = aes(x = Year, y = cwr, color = FAO_shortgroup)) +
   scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
   scale_y_continuous(trans = "log10", labels = scales::comma,
                      breaks = scales::trans_breaks("log10", function(x) 10^x)) +
-  scale_shape_manual(values=c(0:6,15:20,64)) +
+  scale_shape_manual(values=c(0:6,15:20,64,-0x25D0)) +
   annotation_logticks() +
   labs(title = "Annual CWR by crop for 2008 - 2015 water years",
        subtitle = ("Log 10 scale"),
        x = "Water Year", y = "Annual CWR (m3)", 
-       color = "Crop Group", shape = "Crop Group") +
+       color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
   theme(axis.text.y = element_text(angle = 90), legend.position="none") +
   guides(line = "none") +
   theme(legend.position = "none")
@@ -381,12 +460,12 @@ wfb_icc_log <- wf.master.byFAO.wyear %>%
   scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
   scale_y_continuous(trans = "log10", labels = scales::comma,
                      breaks = scales::trans_breaks("log10", function(x) 10^x)) +
-  scale_shape_manual(values=c(0:6,15:20,64)) +
+  scale_shape_manual(values=c(0:6,15:20,64,-0x25D0)) +
   annotation_logticks() +
   labs(title = "Annual Blue WF by crop for 2008 - 2015 water years",
        subtitle = ("Log 10 scale"),
        x = "Water Year", y = "Annual Blue WF (m3/tonne)", 
-       color = "Crop Group", shape = "Crop Group") +
+       color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
   theme(axis.text.y = element_text(angle = 90), legend.position="none") +
   guides(line = "none") +
   theme(legend.position = "none")
@@ -399,12 +478,148 @@ wfb_icc_log <- wf.master.byFAO.wyear %>%
 })
 ```
 
+## P2.5.2: CWR and PPT w/ FAO groups
+```{r plot2-5-2}
+local({
+  
+cwr_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = cwr, color = FAO_shortgroup,
+                             shape = FAO_shortgroup), size = 3) +
+    geom_line(mapping = aes(x = Year, y = cwr, color = FAO_shortgroup)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:6,15:20,64,-0x25D0)) +
+    labs(title = "Annual crop water requirement \nby ICC group for 2008 - 2015 water years",
+         x = "Water Year", y = "Annual CWR (m3)", 
+         color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+    guides(line = "none") +
+    theme(legend.position = "none",
+          plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
 
-# P3: Annual Blue WF, CWR by FAO groups
+
+ppt_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = ppt, color = FAO_shortgroup,
+                           shape = FAO_shortgroup), size=3) +
+  geom_line(mapping = aes(x = Year, y = ppt, color = FAO_shortgroup)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:6,15:20,64,-0x25D0)) +
+    labs(title = "Annual precipitation over irrigated crops \nby ICC group for 2008 - 2015 water years",
+       x = "Water Year", y = "Annual PPT (m3)", 
+       color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none",
+        plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+  l1 <- get_legend(cwr_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(cwr_icc, ppt_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+
+## P2.5.3: Blue and Green ET by FAO groups
+```{r plot2-5-3}
+local({
+  
+etb_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = et.b, color = FAO_shortgroup,
+                             shape = FAO_shortgroup), size = 3) +
+    geom_line(mapping = aes(x = Year, y = et.b, color = FAO_shortgroup)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:6,15:20,64,-0x25D0)) +
+    labs(title = "Annual Blue Evapotranspiration \nby ICC group for 2008 - 2015 water years",
+         x = "Water Year", y = "Volumetric Crop Evapotranspiration (m3)", 
+         color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+    guides(line = "none") +
+    theme(legend.position = "none",
+          plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+
+etg_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = et.g, color = FAO_shortgroup,
+                           shape = FAO_shortgroup), size=3) +
+  geom_line(mapping = aes(x = Year, y = et.g, color = FAO_shortgroup)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:6,15:20,64,-0x25D0)) +
+  labs(title = "Annual Green Evapotranspiration \nby ICC group for 2008 - 2015 water years",
+       x = "Water Year", y = "Volumetric Crop Evapotranspiration (m3)", 
+       color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none",
+        plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+  l1 <- get_legend(etb_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(etb_icc, etg_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+## P2.5.4: Blue and Green WF by FAO groups
+```{r plot2-5-4}
+local({
+  
+wfb_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+    geom_point(mapping = aes(x = Year, y = wf.b, color = FAO_shortgroup,
+                             shape = FAO_shortgroup), size = 3) +
+    geom_line(mapping = aes(x = Year, y = wf.b, color = FAO_shortgroup)) +
+    scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_shape_manual(values = c(0:6,15:20,64,-0x25D0)) +
+    labs(title = "Annual Blue Water Footprint \nby ICC group for 2008 - 2015 water years",
+         x = "Water Year", y = "Water Footprint (m3/tonne)", 
+         color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+    theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+    guides(line = "none") +
+    theme(legend.position = "none",
+          plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+
+wfg_icc <- wf.master.byFAO.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = wf.g, color = FAO_shortgroup,
+                           shape = FAO_shortgroup), size=3) +
+  geom_line(mapping = aes(x = Year, y = wf.g, color = FAO_shortgroup)) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_shape_manual(values = c(0:6,15:20,64,-0x25D0)) +
+  labs(title = "Annual Green Water Footprint \nby ICC group for 2008 - 2015 water years",
+         x = "Water Year", y = "Water Footprint (m3/tonne)", 
+       color = "FAO ICC 1.1\nCrop Group", shape = "FAO ICC 1.1\nCrop Group") +
+  theme(axis.text.y = element_text(angle = 90), legend.position="none") +
+  guides(line = "none") +
+  theme(legend.position = "none",
+        plot.title = element_text(size=10), plot.subtitle = element_text(size=8))
+
+  l1 <- get_legend(wfb_icc + guides(color = guide_legend()) + 
+                   theme(legend.position="bottom", legend.spacing.x=unit(1,"line"),
+                         legend.key.size = unit(.5, 'lines')))
+
+  plot_grid(arrangeGrob(wfb_icc, wfg_icc, ncol=2), l1, ncol = 1, rel_heights = c(1, .1))
+})
+```
+
+
+# P3: Annual Blue WF, CWR by FAO facets
 
 We can also separate crops by the ICC, to view similar graphs on their own scale.
 
-```{r plot3}
+```{r plot3-1}
 wf.master.bycrop.wyear %>%
   ggplot() +
   geom_point(mapping = aes(x = Year, y = wf.b, color = cdl.name)) +
@@ -424,6 +639,10 @@ wf.master.bycrop.wyear %>%
   theme(axis.text.y = element_text(angle = 90), legend.position="none") +
   guides(fill = "none")
 
+
+```
+
+```{r plot3-2}
 wf.master.bycrop.wyear %>%
   ggplot() +
   geom_point(mapping = aes(x = Year, y = cwr, color = cdl.name)) +
@@ -444,11 +663,59 @@ wf.master.bycrop.wyear %>%
   guides(fill = "none")
 ```
 
+```{r plot3-3}
+wf.master.bycrop.wyear %>%
+  ggplot() +
+  geom_point(mapping = aes(x = Year, y = hvst.acres, color = cdl.name)) +
+  facet_wrap(~FAO_shortgroup, ncol = 3, scales = "free") +
+  geom_line(mapping = aes(x = Year, y = hvst.acres, color = cdl.name)) +
+  geom_label_repel(mapping = aes(x = Year, y = hvst.acres, 
+                                 label = ifelse(Year == max(wf.master.bycrop.wyear[["Year"]])%m-% months(12),cdl.name,NA), 
+                                 color = cdl.name), 
+                   box.padding = unit(0.25, "lines"), 
+                   point.padding = unit(0.4, "lines"), nudge_x = 35, na.rm = TRUE, size = 2) +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  scale_y_continuous(labels = function(x) format(10^ceiling(log10(x)), scientific = TRUE)) +
+  expand_limits(x = as.Date("2016-01-01")) +
+  labs(title = "Annual Harvested Acres by crop for 2008 - 2015 water years",
+      x = "Water Year", y = "Harvested Area (acres)", 
+      color = "Crop Name") +
+  theme(axis.text.y = element_text(angle = 45), legend.position="none") +
+  guides(fill = "none")
+```
+
+
+# C2: Percent increase/decrease
+## Harvested acres by FAO Group
+```{r}
+wf.master.byFAO.wyear %>% 
+  group_by(FAO_shortgroup) %>%
+  mutate(hvst.acres.pdiff = ((hvst.acres - lag(hvst.acres, order_by = Year, n = 7))/lag(hvst.acres, order_by = Year, n = 7))*100) %>%
+  mutate(hvst.acres.diff = (hvst.acres - lag(hvst.acres, order_by = Year, n = 7))) %>%
+  filter(!is.na(hvst.acres.pdiff)) %>%
+  select(FAO_shortgroup, hvst.acres.pdiff, hvst.acres.diff) %>%
+  mutate_if(is.numeric, funs(round(.,0))) %>%
+  kable()
+```
+
+## Water footprint by FAO Group
+```{r}
+wf.master.byFAO.wyear %>% 
+  group_by(FAO_shortgroup) %>%
+  mutate(wf.a.pdiff = ((wf.a - lag(wf.a, order_by = Year, n = 7))/lag(wf.a, order_by = Year, n = 7))*100) %>%
+  mutate(wf.a.diff = (wf.a - lag(wf.a, order_by = Year, n = 7))) %>%
+  filter(!is.na(wf.a.pdiff)) %>%
+  select(FAO_shortgroup, wf.a.pdiff, wf.a.diff) %>%
+  mutate_if(is.numeric, funs(round(.,0))) %>%
+  kable()
+```
+
+
 
 # Chunks not run
 ## Labels for every crop group on the right hand of the graph
 It just gets too crowded, but it's a neat hack if you really want it. I think it would be cleaner to 
-have labels off the right side of the graph canvas, all alligned.
+have labels off the right side of the graph canvas, all aligned.
 ```{r ploteeh, eval=FALSE}
 wf.master.byFAO.wyear %>%
   ggplot() +

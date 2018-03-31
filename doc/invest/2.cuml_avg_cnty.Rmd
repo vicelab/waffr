@@ -12,10 +12,10 @@ output:
 ---
   
 ```{r setupKnitr, include = FALSE}
-knitr::opts_knit$set(echo = TRUE, root.dir = normalizePath('../'), collapse = TRUE)
-knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
-                      cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
-                      fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
 knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
 options(width = 120)
 ```
@@ -26,15 +26,13 @@ This worksheet leans heavily on `tidyverse` packages.
 
 ```{r setupEnv, include=FALSE}
 source("R/utilities.R")
-pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", "cowplot", "viridis",
-        "tidyverse", "lubridate", "tools", "readr", "broom", "knitr", "kableExtra", "DT",
+pkgTest("ggedit", "ggalt", "ggrepel", "ggthemes", "gridExtra", 
+        "cowplot", "viridis", "ggfittext", "treemapify",
+        "tidyverse", "lubridate", "tools", "broom", "knitr", "kableExtra", "DT",
         "rgdal", "devtools")
-install_github("wilkox/ggfittext")
-install_github("wilkox/treemapify")
-# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
-pkgTest("ggfittext", "treemapify")
 ggplot2::theme_set(theme_bw())
 ```
+
 ## Import data
 
 `cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
@@ -62,7 +60,7 @@ harvested acres, value in USD), for the modeled crops.
 
 ```{r importData, message=FALSE, warning=FALSE, include=FALSE}
 cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
-roi.table <- read_csv("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_attributes.csv")
+roi.table <- read_csv("output/ca_counties_attributes.csv")
 ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
 ca.hr <- readOGR("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
 wf.master.cyear <- readRDS("output/wfs/wf_total_cyr.rds")
@@ -98,7 +96,8 @@ the by-year summary notebook).
 
 ```{r cleanData}
 wf.master.wyear <- wf.master.wyear %>%
-  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009))
+  filter(!(`cdl.name` == "Oats" & `County` == "Riverside" & `Year` == 2009)) %>%
+  filter(!(`cdl.name` == "Mint" & `County` == "Shasta" & `Year` == 2011))
 ```
 
 # C1: Average statewide water demand *for all* years, by county
@@ -111,8 +110,8 @@ wf.master.allcounty.cyear <- wf.master.cyear %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
   group_by(roi.index, County) %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
-  left_join(roi.table %>% select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   ungroup() %>%         # I'm not sure what to think about the expicit `ungroup()`
   `attr<-`("year_type", "calendar") %>%
   `attr<-`("summary_type", "total")
@@ -122,12 +121,13 @@ wf.master.allcounty.wyear <- wf.master.wyear %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
   group_by(roi.index, County) %>%
   summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(avg = "mean")) %>%
-  left_join(roi.table %>% select(NUM,`HR_NAME`),
-            by = c("roi.index" = "NUM")) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
   ungroup() %>%
   `attr<-`("year_type", "water") %>%
   `attr<-`("summary_type", "total")
 ```
+
 
 # P1: Average Blue WF vs Green WF, county-wise
 Depending on the number of counties in your corpus, it may or may not make sense to visualize all counties
@@ -309,37 +309,43 @@ What if we maintain the same groupings, but color (and size) by crop water requi
 local({
   wfb_wgf_cwu <- wf.master.allcounty.wyear %>%
   ggplot() +
-  geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, size = cwr_avg, color = cwr_avg)) +
+  geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, size = cwr_avg, fill = cwr_avg), shape = 21, stroke = 0.5) +
   scale_x_continuous(trans = "log10", labels = scales::comma,
                      breaks = scales::trans_breaks("log10", function(x) 10^x)) +
   scale_y_continuous(trans = "log10", labels = scales::comma,
                      breaks = scales::trans_breaks("log10", function(x) 10^x)) +
   annotation_logticks() +
-  scale_color_viridis(option = "plasma") +
+  scale_fill_viridis(option = "cividis", labels = function(x) format(10^ceiling(log10(x))/1, scientific = TRUE)) +
   labs(x = "Average Blue WF (m3/tonne)", y = "Average Green WF (m3/tonne)", 
-       color = "Avg CWR \n(m3/yr)", size = "Avg CWR \n(m3/yr)") +
-  guides(size = "none") +
-  theme(axis.text.y = element_text(angle = 90), legend.position = "bottom")
+       fill = "Avg CWR \n(m3/yr)", size = "Avg CWR \n(m3/yr)") +
+  guides(size = "none", fill = guide_colorbar(barheight = 1)) +
+  theme(axis.text.y = element_text(angle = 90), legend.position = "bottom",
+        legend.text = element_text(angle = 25,hjust = 1), legend.spacing.y = unit(0.5,"cm"),
+        legend.margin = margin(t = 0.1, unit = "mm"))
   
   wfb_wgf_cwu_icc <- wf.master.allcounty.wyear %>%
-  mutate(outlier = ifelse(is_extreme(cwr_avg), County, NA)) %>%
-  mutate(funs(factor), outlier) %>%
-  ggplot() +
-  geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, size = cwr_avg, color = outlier)) +
-  geom_label_repel(mapping = aes(x = wf.b_avg, y = wf.g_avg, label = outlier, fill = outlier), 
-                   color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
-                   point.padding = unit(0.5, "lines"), na.rm = TRUE, nudge_x = -1)  +
-  scale_x_continuous(trans = "log10", labels = scales::comma,
-                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
-  scale_y_continuous(trans = "log10", labels = scales::comma,
-                     breaks = scales::trans_breaks("log10", function(x) 10^x)) +
-  annotation_logticks() +
-  labs(x = "Average Blue WF (m3/tonne)", y = "Average Green WF (m3/tonne)", 
-       color = "Extreme \ncounties \n(for CWR)", size = "Avg CWR \n(m3/yr)") +
-  guides(fill = "none", color = "none") +
-  theme(axis.text.y = element_text(angle = 90), legend.position = "bottom")
+    mutate(percentile = percent_rank(cwr_avg)) %>%
+    ggplot() +
+    geom_point(mapping = aes(x = wf.b_avg, y = wf.g_avg, size = cwr_avg, 
+                             color = ifelse(percentile > 0.90, County, NA))) +
+    geom_label_repel(mapping = aes(x = wf.b_avg, y = wf.g_avg, 
+                                   label = ifelse(percentile > 0.90, County, NA), 
+                                   fill = County), 
+                     color = "white", segment.color = 'grey', box.padding = unit(0.35, "lines"), 
+                     point.padding = unit(0.5, "lines"), na.rm = TRUE, 
+                     nudge_x = -0.5, nudge_y = -2.2) +
+    scale_x_continuous(trans = "log10", labels = scales::comma,
+                       breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+    scale_y_continuous(trans = "log10", labels = scales::comma,
+                       breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+    scale_size_continuous(labels = function(x) format(10^ceiling(log10(x))/1, scientific = TRUE)) +
+    annotation_logticks() +
+    labs(x = "Average Blue WF (m3/tonne)", y = "Average Green WF (m3/tonne)", 
+         color = "Extreme \ncounties \n(for CWR)", size = "Avg CWR \n(m3/yr)") +
+    guides(fill = "none", color = "none") +
+    theme(axis.text.y = element_text(angle = 90), legend.position = "bottom")
   
-  t1 <- ggdraw() + draw_label("Mean WF and CWR by county for WY 08-15", fontface='bold')
+  t1 <- ggdraw() + draw_label("Mean WF and CWR by county for Water Years 08-15")
   plot_grid(t1, arrangeGrob(wfb_wgf_cwu, wfb_wgf_cwu_icc, nrow=1), ncol=1, rel_heights=c(0.1, 1))
 
 })
@@ -360,7 +366,7 @@ wf.master.allcounty.wyear %>%
                     place = "centre", grow = TRUE) +
   scale_fill_viridis(trans = "log", option = "viridis", labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
   labs(title = "Mean Blue WF and CWR by county for 2008 - 2015 water years",
-       subtitle = "(CWU expressed as proportional areas, Blue WF expressed log10 fill scale)",
+       subtitle = "(CWR expressed as proportional areas, Blue WF expressed logarithmic color scale)",
        fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
   theme(legend.text=element_text(size=10),
         legend.title=element_text(size=10))
@@ -373,9 +379,48 @@ wf.master.allcounty.wyear %>%
   geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
                              colour = "black", fontface = "italic", min.size = 0) +
   geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
-  scale_fill_viridis(trans = "log", option = "viridis", labels = function(x) format(signif(x,1)/1, scientific = TRUE)) +
+  scale_fill_viridis(trans = "log", option = "viridis", 
+                     labels = function(x) format(10^ceiling(log10(x))/1, scientific = TRUE))  +
   labs(title = "Mean Blue WF and CWR by county for 2008 - 2015 water years",
-       subtitle = "(CWU expressed as proportional areas, Blue WF expressed log10 fill scale)",
+       subtitle = "(CWR expressed as proportional areas, Blue WF expressed logarithmic color scale)",
+       fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
+  theme(legend.text=element_text(size=10),
+        legend.title=element_text(size=10))
+
+# wf.master.allcounty.wyear %>%
+#   filter(County != "Monterey" & County != "Yuba") %>%
+#   ggplot(mapping = aes(area = cwr_avg, fill = wf.b_avg, 
+#                      label = County, subgroup = HR_NAME)) +
+#   geom_treemap() +
+#   geom_treemap_subgroup_border() +
+#   geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
+#                              colour = "black", fontface = "italic", min.size = 0) +
+#   geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
+#   scale_fill_viridis() +
+#   labs(title = "Mean Blue WF and CWR by county for 2008 - 2015 water years",
+#        subtitle = "(CWU expressed as proportional areas)",
+#        fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
+#   theme(legend.text=element_text(size=10),
+#         legend.title=element_text(size=10))
+
+wf.master.wyear %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
+  ungroup() %>%
+  filter(Year == 2015) %>%
+  # filter(County != "Monterey" & County != "Yuba") %>%
+  ggplot(mapping = aes(area = cwr, fill = wf.b, 
+                     label = County, subgroup = HR_NAME)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5,
+                             colour = "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(colour = "white", place = "topleft", reflow = T) + 
+  scale_fill_viridis() +
+  labs(title = "Mean Blue WF and CWR by county for 2015 water years",
+       subtitle = "(CWU expressed as proportional areas)",
        fill = bquote(atop("Blue WF", "("*m^3*"/tonne)"))) +
   theme(legend.text=element_text(size=10),
         legend.title=element_text(size=10))
@@ -413,5 +458,43 @@ cwu.sum %>%
 What follows is a sortable, interactive table (HTML output only):
 ```{r table2}
 datatable(cwu.sum, class = 'cell-border stripe')
+```
+
+# T2: Table, 2010 CWU (AF and TAF)
+
+The following is a tabulation the average CWU in acre-feet (AF) and thousand-acre-feet (TAF)
+for comparison to other tallies of statewide water use. These values represent
+the yearly sums for the October-September period of 2015.
+
+```{r table3}
+# For displaying hundreds w/o scientific notation in html table
+options("scipen"=100, "digits"=4)
+# For fancy html tables
+options(knitr.table.format = "html")
+
+cwu.sum2 <- wf.master.wyear %>%
+  group_by(roi.index, County, Year) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g, wf.b, wf.g), funs(sum(., na.rm = TRUE))) %>%
+  left_join(roi.table %>% select(r_index,`HR_NAME`),
+            by = c("roi.index" = "r_index")) %>%
+  ungroup() %>%
+  filter(Year == 2015) %>%
+  select(county = County, cu.m = cwr) %>%
+  mutate(AF = (cu.m * 0.0008107)) %>%
+  mutate(TAF = (AF / 1000))
+
+cwu.sum2 %>%
+  bind_rows(cbind(county = "Total", 
+                  cwu.sum2 %>% 
+                    summarize_at(vars(cu.m, AF, TAF), funs(sum)))) %>%
+  kable() %>%
+  kable_styling("striped", full_width = F) %>%
+  row_spec(nrow(cwu.sum2)+1, bold = T)
+```
+
+## T1.5 Sortable table
+2010 CWU (AF and TAF)
+```{r table4}
+datatable(cwu.sum2, class = 'cell-border stripe')
 ```
 
