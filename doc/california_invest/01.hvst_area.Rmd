@@ -1,0 +1,130 @@
+---
+title: "County Aggregations"
+author: "asmtry"
+output: 
+  html_document: 
+    number_sections: yes
+    code_folding: hide
+    theme: readable
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+source("R/eto.R")
+
+pkgTest("tidyverse", "rgdal", "raster", "tools", "lubridate", "parallel")
+rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+# rasterOptions(todisk = TRUE)
+# rasterOptions(progress = "text", tmpdir = "tmpdir", time = TRUE)
+ggplot2::theme_set(theme_bw())
+```
+
+## Import data
+
+`lc.dir` contains the Cropland Data Layer files that have been reprojected and upscaled
+(when nessary). These are the files that are used in the final analysis.
+
+`cdl.table` contains relations between crops, their index number in the Cropland Data Layer,
+and the corresponding name and index number in the FAO Indicative Crop Classification (ICC 1.1).
+
+`roi.table` contains relations from the regions of interest used to aggregrate the WF, PPT, 
+and CWU calculations performed in steps 8-10. Here, the relation is the attribute table from a
+shapefile of California county political boundaries. Attributes include: county index, name, and
+corresponding DWR hydrologic region.
+
+`ca.counties` contains the shapefile, on which `roi.table` is based.
+
+`ca.hr` contains the shapefile of DWR hydrologic regions, for California.
+
+`yield.master` contains all of the statistics reported by the CAC annual reports (production tons, 
+harvested acres, value in USD), for the modeled crops.
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+lc.dir <- "output/cleaned_inputs/CDL_CA_projected"
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+roi.table <- read_csv("output/ca_counties_attributes.csv")
+ca.counties <- readOGR("input/SHAPEFILES/cnty24k09_poly/cnty24k09_poly_s100.shp")
+ca.hr <- readOGR("input/SHAPEFILES/dwr/dwr_hydrologic_regions.shp")
+yield.master <-  read_csv("output/yields/NASS_summarized_bycounty.csv", 
+                          col_types = cols(hvst.acres = col_double(), 
+                                           prod.tons = col_double(), val.usd = col_double()))
+```
+
+```{r prepareAnalysis}
+lc.calc.exists <- TRUE
+
+if (lc.calc.exists) {
+  cdl.freqs <- read_csv("output/tmp/mcd_cdl_freq.csv")
+} else {
+
+  lc.paths <- list.files(path=lc.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)
+  
+  lc.table <- data.frame(
+    abs_path = lc.paths,
+    source = sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',3),
+    product_name = 'CDL',
+    date = as.Date(sprintf("%s-01-01",sapply(strsplit(file_path_sans_ext(lc.paths),"/"),'[[',4)), format="%F"),
+    stringsAsFactors = FALSE
+  )
+  
+  lc.table <- lc.table %>%
+    dplyr::filter(date != as.Date("2007-01-01")) %>% 
+    dplyr::filter(date != as.Date("2016-01-01"))
+}
+
+```
+
+Takes about 40 min on bootsy.
+```{r}
+if (lc.calc.exists) {
+  cdl.freqs <- read_csv("output/tmp/mcd_cdl_freq.csv")
+} else {
+  crop_mask_freq <- function(target.path) {
+    target.county <- ca.counties[ca.counties@data$NAME_UCASE == "MERCED",]
+    raster(target.path) %>%
+      raster::crop(target.county) %>%
+      raster::mask(target.county) %>%
+      raster::freq %>%
+      as.data.frame %>%
+      return
+  }
+  
+  freqs <- lc.table %>%
+    dplyr::pull(abs_path) %>%
+    purrr::map(crop_mask_freq) %>%
+    purrr::reduce(full_join, by = "value") %>%
+    dplyr::arrange(value)
+  
+  freqs %>%
+    purrr::set_names(c("cdl.value",2008:2015)) %>%
+    tidyr::gather(year, cdl.cells, -cdl.value) %>%
+    mutate(cdl.sq.m = cdl.cells * 30 * 30) %>%
+    mutate(cdl.acres = round(cdl.sq.m / 4046.87261)) %>% 
+    write_csv("output/tmp/mcd_cdl_freq.csv")
+}
+```
+
+# Compare to CAC
+```{r}
+yield.master <- read_csv("output/yields/NASS_summarized_bycounty.csv") %>%
+    filter(County == "Merced") %>%
+    filter(Year >= 2008 & Year <= 2015) %>%
+    full_join(cdl.freqs, by = c("cdl.value","Year" = "year"))
+```
+
