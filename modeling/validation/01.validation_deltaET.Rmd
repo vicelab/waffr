@@ -1,0 +1,306 @@
+---
+title: "Verification"
+author: "asmtry"
+date: "April 25, 2018"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+This worksheet leans heavily on `tidyverse` packages.
+
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+source("R/eto.R")
+
+pkgTest( "rgdal", "raster", "sf", 
+         "tidyverse", "lubridate", "plotly",
+         "tools", "parallel")
+rasterOptions(progress = "text", tmpdir = "tmpdir")
+# rasterOptions(todisk = TRUE)
+# As of May 2018, this worksheet uses `sf` features of ggplot that are currently under development
+# devtools::install_github("tidyverse/ggplot2")
+# As of May 2018, this worksheet uses `stars`, a package that is currently under development
+# devtools::install_github("r-spatial/stars")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggplot2")
+ggplot2::theme_set(theme_bw())
+```
+
+This worksheet provides a framework for sampling the calculated CWR corpus (crop
+water requirement) for a given region of interest, or time period of interest.
+
+## Input Parameters
+`target.date.range` contains the date range for our period of interest. This 
+should be defined as an interval in the smallest unit of time present the CWR corpus. 
+E.g. for the California case study, CWR was computed at a daily time step. 
+If we are interested in sampling the 2015 water year, we can provide the starting
+and ending dates. Alternatively, we can specify a starting date and use `lubridate`
+to compute the end date, given a duration.
+`target.region` contains the region of interest by which to sample the ETC corpus.
+This should be provided as a shapefile. Alternatively, you can use `sf` or `rgdal`
+to select subset a region of interest out of a larger shapefile.
+
+`cwr.dir` contains the path to the CWR rasters.
+E.g. for the California case study, we link to the daily crop ET calculated in 
+`5.cwu_calcs.Rmd`.
+`ppt.dir` contains the path to the precipitation (aka ppt) rasters.
+E.g. for the California case study, we link to the upscalled daily PRISM data.
+`lc.dir` contains the path to the landcover rasters. This is used as the base 
+on which to compute zonal sums (the zones are the crop types).
+E.g. for the California case study, we link to the USDA/NASS CDL.
+`kc.lut` contains a wide table of daily crop coefficients for each modeled crop,
+arranged according to crop categories present in the USDA/NASS CDL.
+`cdl.table` is a look-up table containing pairings between CDL value and CDL
+class name. This includes all other non-crop land cover categories in the CDL.
+`CDL.LUT.dual` is arranged identically to `kc.lut`. However, it only contains
+crop coefficients for double-cropped landcover categories.
+
+```{r importData}
+target.date.range <- lubridate::interval(ymd("20141001"), ymd("20150930"))
+target.region <- readOGR("input/validation/2018_delta_et/delta_service_area/delta_service_area_teale.shp")
+cwr.dir <- "output/cwr_calcs"
+ppt.dir <- "output/cleaned_inputs/PRISM_scaled_projected"
+lc.dir <- "output/cleaned_inputs/CDL_CA_projected"
+kc.lut <- readRDS("output/tables/CDL_Kc_LUT_daily.rds")
+cdl.table <- read_csv("input/TABLES/cdl_classes_all.csv")
+CDL.LUT.dual <- readRDS("output/tables/CDL_LUT_dualtagged.rds")
+```
+
+## Enumerate input parameters
+```{r enumerateInputs}
+enumerate_inputs <- function(target.dir, product_name, source_index, date_index) {
+  tibble(abs_path = list.files(path = target.dir, pattern = ".(tif)$", full.names = TRUE, recursive = TRUE)) %>%
+    mutate(source = flatten_chr(map(strsplit(file_path_sans_ext(abs_path),"/"), source_index))) %>%
+    mutate(product_name = product_name) %>%
+    mutate(date = ymd(flatten_chr(map(strsplit(file_path_sans_ext(abs_path),"/"), date_index)))) %>%
+    mutate(wyear = date %m+% months(3)) %>%
+    return
+}
+
+cwr.table <- enumerate_inputs(cwr.dir, "cwr", 2, 4)
+ppt.table <- enumerate_inputs(ppt.dir, "ppt", 3, 5)
+
+lc.table <- tibble(abs_path = list.files(path=lc.dir, pattern=".(tif)$", full.names=T, recursive=TRUE)) %>%
+  mutate(source = flatten_chr(map(strsplit(file_path_sans_ext(abs_path),"/"),3))) %>%
+  mutate(product_name = "cdl") %>%
+  mutate(date = ymd(flatten_chr(map(strsplit(file_path_sans_ext(abs_path),"/"),5))))
+
+## TODO: Add input validation logic
+rm(cwr.dir, ppt.dir,lc.dir)
+```
+
+## Mask ROI
+This does not take very long for a small shapefile. It took about 250 seconds on a
+Nehalem (c.a. 2011) Xeon.
+```{r maskROI}
+zone.mask <- lc.table %>% 
+  filter(date %within% target.date.range) %>%
+  pull(abs_path) %>%
+  raster %>%
+  raster::crop(target.region) %>%
+  raster::mask(target.region)
+
+writeRaster(zone.mask, "output/validation/cdl2015_deltaET_mask.tif")
+zone.mask <- raster("output/validation/cdl2015_deltaET_mask.tif")
+
+cwr.subset <- cwr.table %>%
+  filter(date %within% target.date.range) %>%
+  pull(abs_path)
+
+ppt.subset <- ppt.table %>%
+  filter(date %within% target.date.range) %>%
+  pull(abs_path)
+```
+
+# Tally crop water requirement and precipitation
+For some reason, `raster::zonal` fails when `rasterOptions(time = TRUE)`.
+It fails with:
+> in as.POSIXct.default(time2) : 
+> do not know how to convert 'time2' to class “POSIXct”
+TODO: Figure out how to fix it.
+
+It takes approximately 7 seconds to crop each day and produce a zone sums.
+For a 365-day water year, it took 40 minutes to process on a Nehalem (c.a. 2011) 
+Xeon (3.2 Ghz, one thread).
+```{r tallyParameters}
+make_zone_sum <- function(abs_paths, index_path, target_region) {
+  abs_paths <- raster(abs_paths) %>%
+  raster::crop(target_region)
+  z.table = zonal(abs_paths, raster(index_path), function(x,...) sum(as.numeric(x), na.rm = TRUE), progress = "text")
+  return(z.table)
+}
+
+Sys.time()
+cwr.tally <- cwr.subset %>%
+  map(function(x) make_zone_sum(x, "output/validation/cdl2015_deltaET_mask.tif", target.region)) %>%
+  map(as.tibble) %>%
+  Reduce(function(x, y) full_join(x, y, by = "zone"), .) %>%
+  `colnames<-`(c("crop", seq(1,ncol(.)-1))) %>%
+  gather(date, zsum, -crop) %>% 
+  mutate(date = as.Date(as.numeric(date) - 1, origin = int_start(target.date.range), format="%Y-%m-%d")) %>%
+  write_rds("output/validation/cdl2015_deltaET_cwr.rds")
+
+
+Sys.time()
+ppt.tally <- ppt.subset %>%
+  map(function(x) make_zone_sum(x, "output/validation/cdl2015_deltaET_mask.tif", target.region)) %>%
+  map(as.tibble) %>%
+  Reduce(function(x, y) full_join(x, y, by = "zone"), .) %>%
+  `colnames<-`(c("crop", seq(1,ncol(.)-1))) %>%
+  gather(date, zsum, -crop) %>% 
+  mutate(date = as.Date(as.numeric(date) - 1, origin = int_start(target.date.range), format="%Y-%m-%d")) %>%
+  write_rds("output/validation/cdl2015_deltaET_ppt.rds")
+Sys.time()
+```
+
+# Clean CWR/PPT zone sums
+This section replicates logic from `8.zone_prep.Rmd` to ortanize and remove 
+superfluous non-crop categories from the zonal sum tallies.
+
+## Clean zone sums to split double-cropped categories into respective crops
+There are some categories that represent two crop's worth of CWU in a respective 
+year. While `5.cwu_calcs.Rmd` distinguishes the separate crops, the tally logic
+does not.
+
+Here where we create a function to re-tag dual cropped classes into their real 
+classes, depending on the day of year.
+```{r reassignDualCrop}
+# SMALL HACK: Resolve for leap years by adding a 366'th day 
+#             that has crop parameters equal to the 365th
+# Instead of modeling Feb 29, we model Dec 31st twice
+# TODO: We can make this more accurate by modeling Feb 28th twice,
+#       or adding logic to extend the growing season by one day during leap years.
+#       Nevertheless, late December and February conditions are typically similar.
+CDL.LUT.dual <- cbind(CDL.LUT.dual,"366" = CDL.LUT.dual[["365"]])
+CDL.LUT.dual <- gather(CDL.LUT.dual, "day_of_year", "real_value", 3:368, -cdl_name, convert = TRUE)
+
+reassign_dualcrop <- function(crop, date) {
+  real_value <- left_join(data.frame("crop" = crop, "date" = yday(date)), CDL.LUT.dual, by = c("crop" = "value", "date" = "day_of_year"))[["real_value"]]
+  return(ifelse(is.na(real_value), crop, real_value))
+}
+```
+
+## Clean zone sums to remove non-crop counts
+When we computed zone sums, we used raw landcover rasters, which included land 
+cover classificaitons that we were not interested in (urban, water, et al.)
+
+Here, we create two functions that the do the following:
+  1. Remove non-crop land cover category zone sums
+  2. Identify the non-modeled *crops* present in the zone sum observations.
+  These are crop categories observed in the landcover dataset that we did not 
+  have crop coefficients for.
+  
+```{r cleanZoneSums}
+# List landuse-zones present in our zonesums that are NOT present in our crop model table
+# These zones are either other non-crop categories, or crops that we did not model
+not.counted <- sort(unique(cwr.tally$crop)[!(unique(cwr.tally$crop) %in% kc.lut$value)])
+# Pair with category names from cdl.table
+not.counted <- cdl.table[cdl.table[["VALUE"]] %in% not.counted,]
+# Print the non-modeled CROPS
+not.counted[not.counted[["VALUE"]] %in% c(5, 26, 27, 31, 38, 71, 74, 231, 232, 233, 234, 238, 242, 244, 247, 250),]
+
+cwr.tally <- cwr.tally %>%
+  mutate(crop = reassign_dualcrop(crop, date)) %>%
+  filter(!(crop %in% not.counted[["VALUE"]])) %>%
+  write_rds("output/validation/cdl2015_deltaET_cwr_cleaned.rds")
+
+ppt.tally <- ppt.tally %>%
+  mutate(crop = reassign_dualcrop(crop, date)) %>%
+  filter(!(crop %in% not.counted[["VALUE"]])) %>%
+  write_rds("output/validation/cdl2015_deltaET_ppt_cleaned.rds")
+```
+
+
+# Compute CWR/PPT volumes
+This section replicates logic from `8.zone_prep.Rmd` to convert zonal sum tallies
+into volumes of crop water requirement and water precipitated over harvested areas.
+
+## Remove scaling factors
+We applied scaling factors of 100 to the evapotranspiration and precipitation rasters, 
+AND to the crop coefficients. If $z_{1}$ is our cumulative scaling factor for *ET*:
+
+$$
+\begin{aligned}
+\textrm{CWR} &\approx \textrm{ETo} \times \textrm{Kc} \\
+\textrm{CWR} \times z_1 &= (100 \cdot \textrm{ETo}) \times (100 \cdot \textrm{Kc}) \\
+\hline
+z_1 &= (100 \times  100) = 100^2 \\
+\end{aligned}
+$$
+
+Likewise, our scaling factor for *PPT* ($z_{2}$) is:
+
+$$
+\begin{aligned}
+\textrm{ppt} \times z_2 &= \textrm{ppt} \times 100\\
+\hline
+z &= 100 \\
+\end{aligned}
+$$
+
+Note that there is no error here. If you think $$z$$ for precipitation should be 
+$$100^2$$, think about it a bit harder.
+
+```{r removeScalingFactors}
+# WARNING: Hardcoded scaling factors
+z1 = 100*100
+z2 = 100
+
+cwr.master <- cwr.tally %>%
+  mutate(zsum = zsum/z1)
+
+ppt.master <- ppt.tally %>%
+  mutate(zsum = zsum/z2)
+```
+
+## Convert depths into volumes
+`{cwr,ppt}.master` both represent the sum of all of the daily depths of 
+precipitation and crop evapotransporation 'observed' in all of the grid cells of 
+each zone. We can turn this value into an actualvolume of water by multiplying 
+the depth of water in each cell by the area of each cell. Since we use a uniform 
+grid for the entire state, each cell has the same area. 
+
+Via dimensional analysis:
+$$
+x\ \textrm{mm ET} \times \frac{30*30\ \textrm(m^2)}{cell} \times \frac{\textrm{m}}{1000 \ \textrm{mm}}= \frac{0.9 \cdot x\ m^3 ET}{cell}
+$$
+
+```{r convertMapUnitsToVol}
+xy.res <- 30
+z.unit <- 0.001 #Units are in milimeters = 0.001 meters
+
+cwr.master <- cwr.master %>%
+  mutate(vol = zsum * (xy.res^2) * z.unit)
+
+ppt.master <- ppt.master %>%
+  mutate(vol = zsum * (xy.res^2) * z.unit)
+```
+
+## Compute IWR and green-water ET
+In order to partition the water footprint into a rain-fed and irrigated water 
+component, we first need to calculate the irrigation water requirement.
+
+The irrigation water requirement is equivalent to blue-water ET.
+The rainfed component is equivalent to green-water ET.
+This is all summarized in a master table that describes crop water **use** (cwu).
+
+```{r aggregateCWU}
+# WARNING: Hardcoded path
+cwu.master <- cwr.master %>%
+  select(crop, date) %>%
+  mutate(cwr = cwr.master[["vol"]]) %>%
+  mutate(ppt = ppt.master[["vol"]]) %>%
+  mutate(et.b = pmax(0,(`cwr`-`ppt`))) %>%
+  mutate(et.g = pmin(cwr,ppt)) %>%
+  write_rds("output/validation/cdl2015_deltaET_master.rds", compress = "gz")
+```
