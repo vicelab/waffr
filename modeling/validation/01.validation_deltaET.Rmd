@@ -1,5 +1,5 @@
 ---
-title: "Verification"
+title: "Delta ET Validation - Sampling"
 author: "asmtry"
 date: "April 25, 2018"
 output: html_document
@@ -22,18 +22,15 @@ source("R/utilities.R")
 source("R/kc.R")
 source("R/eto.R")
 
-pkgTest( "rgdal", "raster", "sf", 
-         "tidyverse", "lubridate", "plotly",
-         "tools", "parallel")
+pkgTest("rgdal", "raster", "sf", 
+        "tidyverse", "lubridate",
+        "tools", "parallel")
 rasterOptions(progress = "text", tmpdir = "tmpdir")
 # rasterOptions(todisk = TRUE)
-# As of May 2018, this worksheet uses `sf` features of ggplot that are currently under development
-# devtools::install_github("tidyverse/ggplot2")
 # As of May 2018, this worksheet uses `stars`, a package that is currently under development
 # devtools::install_github("r-spatial/stars")
 # pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
-pkgTest("ggplot2")
-ggplot2::theme_set(theme_bw())
+# pkgTest("stars")
 ```
 
 This worksheet provides a framework for sampling the calculated CWR corpus (crop

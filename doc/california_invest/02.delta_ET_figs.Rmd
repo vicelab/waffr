@@ -1,0 +1,183 @@
+---
+title: "Delta ET Validation - Figures"
+author: "asmtry"
+date: "April 26, 2018"
+output: html_document
+---
+
+```{r setupKnitr, include = FALSE}
+knitr::opts_knit$set(echo = TRUE, collapse = TRUE)
+# knitr::opts_chunk$set(cache = TRUE, autodep = TRUE,
+#                       cache.path = paste0('cache/',sub(".Rmd", "", knitr::current_input()),'/'),
+#                       fig.path = paste0('figures/',sub(".Rmd", "", knitr::current_input()),'/'))
+knitr::opts_chunk$set(fig.width=8, fig.asp = 0.618, warning = FALSE)
+options(width = 120)
+```
+
+# Setup
+This worksheet leans heavily on `tidyverse` packages.
+```{r setupEnv, include=FALSE}
+source("R/utilities.R")
+source("R/kc.R")
+source("R/eto.R")
+
+pkgTest("tidyverse", "lubridate", "readxl", "plotly", "ggthemes", "tools")
+rasterOptions(progress = "text", tmpdir = "tmpdir")
+# rasterOptions(todisk = TRUE)
+# As of May 2018, this worksheet uses `sf` features of ggplot that are currently under development
+# devtools::install_github("tidyverse/ggplot2")
+# As of May 2018, this worksheet uses `stars`, a package that is currently under development
+# devtools::install_github("r-spatial/stars")
+# pkgTest repeated for the non-CRAN packages, because knitr breaks otherwise
+pkgTest("ggplot2")
+ggplot2::theme_set(theme_bw(base_size = 11))
+```
+
+## Import data
+
+`cdl.table` contains relations between crops, their index number in the 
+Cropland Data Layer, and the corresponding name and index number in the 
+FAO Indicative Crop Classification (ICC 1.1).
+`cwu.master` contains daily sums of cwr, ppt, etc, and harvested tons/acres/USD 
+aggregated by crop, county, and water year. It only includes the counties that 
+have corresponding entries in the County Ag Comissioners (CAC) annual yield 
+reports. Counties that had modeled ag production, without an accompanying entry 
+in the CAC annual reports were omitted.
+`cdl.table` is a look-up table containing pairings between CDL value and CDL
+class name. This includes all other non-crop land cover categories in the CDL.
+
+```{r importData, message=FALSE, warning=FALSE, include=FALSE}
+cdl.table <- read_csv("input/TABLES/cdl_crops.csv")
+cwu.master <- read_rds("output/validation/cdl2015_deltaET_master.rds")
+cdl.table <- read_csv("input/TABLES/cdl_classes_all.csv")
+deltaET <- read_xlsx("input/validation/2018_delta_et/ModelResultsSummary.xlsx", sheet = "data")
+```
+
+## Prepare validation data
+The Delta Consumptive Water Use Comparative Study uses 3-digit English shortname 
+representations of month (e.g. JAN, FEB, etc.)
+Here, we overwrite the locale environmental variables for time, to get 
+reproducable behavior across platforms.
+```{r prepValidation}
+Sys.setlocale("LC_TIME", "C")
+deltaET.wy2015 <- deltaET %>%
+  filter(region == "dsa") %>%  # Region is delta service area (denoted by shapefile)
+  filter(include == "yes") %>% # Removes landcover types not considered in delta study
+  filter(wateryear == 2015) %>% 
+  mutate(date = as.Date(paste0(month,"01",wateryear), format = "%b%d%Y")) %>%
+  mutate(date = if_else(month(date) > 9, date %m+% years(-1), date)) %>%
+  mutate(crop_acft = as.double(crop_acft))
+```
+
+
+# Summarize data
+
+## Summarize model data
+```{r summarizeData}
+cwu.wy2015 <- cwu.master %>%
+  mutate(wyear = date %m+% months(3)) %>%
+  group_by(crop, year = year(wyear)) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g), funs(sum(., na.rm = TRUE))) %>%
+  inner_join(cdl.table, by = c("crop" = "VALUE")) %>%
+  rename(cdl.name = CLASS_NAME) %>%
+  select(year, crop, cdl.name, cwr, ppt, et.b, et.g) %>%
+  dplyr::ungroup()
+
+cwu.wy2015.month <- cwu.master %>%
+  group_by(crop, date = floor_date(date, "month")) %>%
+  summarize_at(vars(cwr, ppt, et.b, et.g), funs(sum(., na.rm = TRUE))) %>%
+  inner_join(cdl.table, by = c("crop" = "VALUE")) %>%
+  rename(cdl.name = CLASS_NAME) %>%
+  select(date, crop, cdl.name, cwr, ppt, et.b, et.g) %>%
+  dplyr::ungroup()
+
+
+cwu.wy2015 %>%
+ summarize_at(vars(cwr, ppt, et.b, et.g), funs(sum(., na.rm = TRUE)))
+```
+
+## Summarize validation data
+```{r}
+deltaET.wy2015.month <- deltaET.wy2015 %>%
+  group_by(date, model, cropname) %>%
+  summarize_at(vars(count, crop_acft), funs(sum(., na.rm = TRUE)))
+```
+
+
+# Figure: Monthly differences in modeled ETc
+To convert from cubic meters to acre feet, use the following conversion factor:
+$$
+ m^3 \times \frac{\textrm{acre}}{4,046.87261\ m^2} \times \frac{\textrm{foot}}{0.3048\ m} = 8.104\times10^{-4}\ ^{AF}/_{m^3}
+$$
+```{r}
+deltaET.wy2015.monthtot <- deltaET.wy2015.month %>%
+  group_by(date, model) %>%
+  summarize(tot_acft = sum(crop_acft))
+
+cwu.wy2015.monthtot <- cwu.wy2015.month %>%
+  group_by(date) %>%
+  mutate(acft = cwr * 8.104 * 10^(-4)) %>%
+  summarize(tot_acft = sum(acft)) %>%
+  mutate(model = "manuscript") 
+  
+all.wy2015.monthtot <- deltaET.wy2015.monthtot %>%
+  bind_rows(cwu.wy2015.monthtot) %>%
+  ungroup() %>%
+  mutate(model = fct_relevel(model, "manuscript", after = Inf))
+```
+## Combined
+```{r}
+all.wy2015.monthtot %>%
+  filter(model != "eto") %>% # Drop ETo, since it's not a real crop model
+  ggplot() +
+  geom_col(aes(x = date, y = tot_acft, fill = model), position = "dodge") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b", expand =  expand_scale(mult = c(0.03, 0.03))) +
+  scale_y_continuous("Thousand Acre Feet", labels = function(x) x/1000,
+                     breaks = seq(0,300*1000, by = 50*1000),
+                     expand =  expand_scale(mult = c(0.02, 0.06))) +
+  scale_fill_tableau("colorblind10") +
+  coord_cartesian() +
+  labs(title = "Water Year 2015 Monthly Estimated Crop Evapotranspiration",
+         x = "Date", y = "Thousand Acre-feet", fill = "Model") +
+  theme(legend.direction = "horizontal", legend.justification = c(0, 1), legend.position = c(0, 1),
+    legend.background = element_rect(fill=alpha(0.4)))
+```
+
+## Faceted (model on axis)
+```{r}
+all.wy2015.monthtot %>%
+  filter(model != "eto") %>% # Drop ETo, since it's not a real crop model
+  mutate(month = month(date, label = TRUE, abbr = TRUE)) %>%
+  ggplot() +
+  geom_col(aes(x = model, y = tot_acft, fill = model), position = "dodge") +
+  facet_grid(facets = . ~ month ) +
+  scale_y_continuous("Thousand Acre Feet", labels = function(x) x/1000,
+                     breaks = seq(0,300*1000, by = 50*1000),
+                     expand =  expand_scale(mult = c(0.02, 0.06))) +
+  scale_fill_tableau("colorblind10") +
+  coord_cartesian() +
+  labs(title = "Water Year 2015 Monthly Estimated Crop Evapotranspiration",
+         x = "Model", y = "Thousand Acre-feet") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Faceted (model in legend)
+```{r}
+all.wy2015.monthtot %>%
+  filter(model != "eto") %>% # Drop ETo, since it's not a real crop model
+  mutate(month = month(date, label = TRUE, abbr = TRUE)) %>%
+  ggplot() +
+  geom_col(aes(x = model, y = tot_acft, fill = model), position = "dodge") +
+  facet_grid(facets = . ~ month ) +
+  scale_y_continuous("Thousand Acre Feet", labels = function(x) x/1000,
+                     breaks = seq(0,300*1000, by = 50*1000),
+                     expand =  expand_scale(mult = c(0.02, 0.06))) +
+  scale_fill_tableau("colorblind10") +
+  coord_cartesian() +
+  labs(title = "Water Year 2015 Monthly Estimated Crop Evapotranspiration",
+         x = "Model", y = "Thousand Acre-feet") +
+  guides(fill = guide_legend(direction = "horizontal", position = "bottom", nrow = 1)) +
+  theme(axis.ticks = element_blank(), axis.text.x = element_blank(),
+        legend.direction = "horizontal", legend.position = "bottom")
+```
