@@ -12,7 +12,7 @@
 #' @examples
 #' No examples for now
 #' 
-source("R/utilities.R")
+source("../R/utilities.R")
 
 pkgTest("readr", "lubridate")
 
