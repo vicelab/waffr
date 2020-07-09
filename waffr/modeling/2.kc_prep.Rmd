@@ -11,8 +11,8 @@ knitr::opts_chunk$set(cache=TRUE)
 ```
 
 ```{r setupEnv, include=FALSE}
-source("../R/utilities.R")
-source("../R/kc.R")
+source("../R_orig/utilities.R")
+source("../R/kc_prep.R")
 
 input_folder <- "Q:/VICE Lab/RESEARCH/PROJECTS/wfar/input/"
 output_folder <- "C:/Users/dsx/CodeLocal/waffr_pre-release-master/output/"

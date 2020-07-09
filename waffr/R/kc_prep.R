@@ -32,14 +32,81 @@
 #'
 #' > Lourence and Pruitt found ET of rice to be about 4-5% higher than lysimeter measured grass in Davis.  Rice ET was measured by Bowen ratio about 25 miles north of Davis.  The postulated that the ETo would be less in the rice growing region because of higher humidity.  As a result, they recommend a Kc = 1.20 to 1.25.  However, CIMIS data indicates that the ETo is only about 5% higher in Davis than at the Nicolas site and in Colusa, which are near the rice growing region. As a result, we would recommend a Kc = 1.05 x 1.05 = 1.10 to estimate ETrice from ETo estimated at a CIMIS station in the rice growing region..
 
-#source("../R/utilities.R")
-#source("../R/kc.R")
+tagAnomalous <- function(input.table, column.var, criteria) {
+	output.tag <- rep(FALSE, nrow(input.table))
+	# TODO: There's probably a more effecient way of doing this
+	for (item in column.var) {
+		output.tag[input.table[item] != criteria(input.table[item])] <- TRUE
+	}
+	return(output.tag)
+}
 
-input_folder <- "Q:/VICE Lab/RESEARCH/PROJECTS/wfar/input/"
-output_folder <- "C:/Users/dsx/CodeLocal/waffr_pre-release-master/output/"
+makeAnomtable <- function(parameter.table) {
+	return(as.data.frame(sapply(c("xmin", "xmax", "ymin", "ymax", "ncell", "xres", "yres"),
+															function(x) tagAnomalous(parameter.table, x, modal))))
+}
 
-input_table <- paste(input_folder, "TABLES/cup+_kc_cdl.csv", sep="")
-start_year <- 2001
+tagKcDaily <- function(t, crop) {
+	# TODO: Refactor into cases
+	# TODO: Use interpolation function to allow for different smoothers
+	fKc <- ifelse(t < crop[["t_a.1"]], 0,
+								ifelse(t >= crop[["t_a.1"]] & t <= crop[["t_e.1"]],  crop[["1st VALUE"]], 0))
+
+	# Only execute next calc if dual crop parameters exist
+	if (!is.na(crop[["t_a.2"]])) {
+		fKc2 <- ifelse(t < crop[["t_a.2"]], 0,
+									 ifelse(t >= crop[["t_a.2"]] & t <= crop[["t_e.2"]],  crop[["2nd VALUE"]], 0))
+
+		# TEST: for overlap between crop 1 and crop 2
+		# DRY: This test should occur when CDL.Kc.LUT is imported.
+		# TODO: Move to unit tests
+		if(any(fKc!=0 & fKc2!=0))
+			warning(paste0("oops, you may have double crops with
+                     overlapping growing periods for ", crop[["cdl_name"]]))
+		# Merge dual-cropping scenarios
+		fKc[fKc2!=0] = fKc2[fKc2!=0]
+	}
+	return(fKc)
+}
+
+calculateKcDaily <- function(t, crop) {
+	# TODO: Refactor into cases
+	# TODO: Use interpolation function to allow for different smoothers
+	fKc <- ifelse(t < crop[["t_a.1"]], 0,
+								ifelse(t >= crop[["t_a.1"]] & t <= crop[["t_b.1"]],  crop[["Kc AB"]],
+											 ifelse(t > crop[["t_b.1"]] & t < crop[["t_c.1"]],
+											 			 crop[["Kc AB"]] + round(as.numeric(t - crop[["t_b.1"]], units = "days") *
+											 			 													((crop[["Kc CD"]] - crop[["Kc AB"]]) / as.numeric((crop[["t_c.1"]] - crop[["t_b.1"]]), units = "days"))),
+											 			 ifelse(t >= crop[["t_c.1"]] & t <= crop[["t_d.1"]],  crop[["Kc CD"]],
+											 			 			 ifelse(t > crop[["t_d.1"]] & t < crop[["t_e.1"]],
+											 			 			 			 crop[["Kc CD"]] + round(as.numeric(t - crop[["t_d.1"]], units = "days") *
+											 			 			 			 													((crop[["Kc E"]] - crop[["Kc CD"]]) / as.numeric((crop[["t_e.1"]] - crop[["t_d.1"]]), units = "days"))),
+											 			 			 			 ifelse(t == crop[["t_e.1"]], crop[["Kc E"]], 0))))))
+
+	# Only execute next calc if dual crop parameters exist
+	if (!is.na(crop[["t_a.2"]])) {
+		fKc2 <- ifelse(t < crop[["t_a.2"]], 0,
+									 ifelse(t >= crop[["t_a.2"]] & t <= crop[["t_b.2"]],  crop[["2nd Kc AB"]],
+									 			 ifelse(t > crop[["t_b.2"]] & t < crop[["t_c.2"]],
+									 			 			 crop[["2nd Kc AB"]] + round(as.numeric(t - crop[["t_b.2"]], units = "days") *
+									 			 			 															((crop[["2nd Kc CD"]] - crop[["2nd Kc AB"]]) / as.numeric((crop[["t_c.2"]] - crop[["t_b.2"]]), units = "days"))),
+									 			 			 ifelse(t >= crop[["t_c.2"]] & t <= crop[["t_d.2"]], crop[["2nd Kc CD"]],
+									 			 			 			 ifelse(t > crop[["t_d.2"]] & t < crop[["t_e.2"]],
+									 			 			 			 			 crop[["2nd Kc CD"]] + round(as.numeric(t - crop[["t_d.2"]], units = "days") *
+									 			 			 			 			 															((crop[["2nd Kc E"]] - crop[["2nd Kc CD"]]) / as.numeric((crop[["t_e.2"]] - crop[["t_d.2"]]), units = "days"))),
+									 			 			 			 			 ifelse(t == crop[["t_e.2"]], crop[["2nd Kc E"]], 0))))))
+
+		# TEST: for overlap between crop 1 and crop 2
+		# DRY: This test should occur when CDL.Kc.LUT is imported.
+		# TODO: Move to unit tests
+		if(any(fKc!=0 & fKc2!=0))
+			warning(paste0("oops, you may have double crops with
+                     overlapping growing periods for ", crop[["cdl_name"]]))
+		# Merge dual-cropping scenarios
+		fKc[fKc2!=0] = fKc2[fKc2!=0]
+	}
+	return(fKc)
+}
 
 # Step 1: Prepare lookup table
 
@@ -114,8 +181,7 @@ prepare_lookup_table_data <- function(input_table, start_year){
 #'
 #'
 #'
-#' @export
-prepare_lookup_table <- function(input_table, start_year){
+prepare_lookup_table <- function(input_table, start_year, output_folder = NA){
 	CDL.Kc.LUT <- prepare_lookup_table_data(input_table, start_year)
 
 	#Next we create the actual look-up table that contains daily Kc values, computed according to the heuristic from CUP+. We're using if-else tests for clarity, but the following could be vectorized for a marginal speedup.
@@ -151,17 +217,17 @@ prepare_lookup_table <- function(input_table, start_year){
 	#  plot(1:365,CDL.Kc.LUT.daily[row,3:367])
 	#}
 
-	return(CDL.Kc.LUT.daily)
+	if(!is.na(output_folder)){
+		saveRDS(CDL.Kc.LUT.daily, paste(output_folder, "tables/CDL_Kc_LUT_daily.rds", sep=""))
+		write.csv(CDL.Kc.LUT.daily, paste(output_folder, "tables/CDL_Kc_LUT_daily.csv", sep=""))
+	}
+
+	return(list("kc_lut" = CDL.Kc.LUT, "kc_lut_daily" = CDL.Kc.LUT.daily))
 }
 
 
 # This final structure is not "tidy", in the sense of variables forming columns and observations forming rows.
 # It's a 3-dimensional lookup table project into two.
-
-```{r saveDL-Kc-LUT}
-saveRDS(CDL.Kc.LUT.daily, paste(output_folder, "tables/CDL_Kc_LUT_daily.rds", sep=""))
-write.csv(CDL.Kc.LUT.daily, paste(output_folder, "tables/CDL_Kc_LUT_daily.csv", sep=""))
-```
 
 # Create special LUT for dual-cropped regions for later dis-entanglement
 
@@ -170,7 +236,7 @@ write.csv(CDL.Kc.LUT.daily, paste(output_folder, "tables/CDL_Kc_LUT_daily.csv", 
 #'
 #'
 #'
-prepare_dual_crop_lookup_table <- function(original_lookup_table, output_folder){
+prepare_dual_crop_lookup_table <- function(original_lookup_table, output_folder = NA){
 	# Subset to only dual-cropped regions
 	CDL.LUT.dual <- original_lookup_table[original_lookup_table[["is.doublecrop"]] == TRUE,]
 	# Create daily Kc values for 2 years.
@@ -184,8 +250,10 @@ prepare_dual_crop_lookup_table <- function(original_lookup_table, output_folder)
 	CDL.LUT.dual <- cbind(value = original_lookup_table[original_lookup_table[["is.doublecrop"]] == TRUE,][["VALUE"]], cdl_name = original_lookup_table[original_lookup_table[["is.doublecrop"]] == TRUE,][["cdl_name"]], as.data.frame(CDL.LUT.dual))
 	CDL.LUT.dual[CDL.LUT.dual == 0] <- NA
 
-	saveRDS(CDL.LUT.dual, paste(output_folder, "tables/CDL_LUT_dualtagged.rds", sep=""))
-	write.csv(CDL.LUT.dual, paste(output_folder, "tables/CDL_LUT_dualtagged.csv", sep=""))
+	if(!is.na(output_folder)){
+		saveRDS(CDL.LUT.dual, paste(output_folder, "tables/CDL_LUT_dualtagged.rds", sep=""))
+		write.csv(CDL.LUT.dual, paste(output_folder, "tables/CDL_LUT_dualtagged.csv", sep=""))
+	}
 
 	return(CDL.LUT.dual)
 }

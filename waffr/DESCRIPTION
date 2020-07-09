@@ -2,7 +2,7 @@ Package: waffr
 Type: Package
 Title: What the Package Does (Title Case)
 Version: 0.1.0
-Author: Lorenzo Booth, Vicky Rodriguez, Nick Santos
+Author: Lorenzo Booth, Vicky Espinoza, Nick Santos
 Maintainer: Nick Santos <yourself@somewhere.net>
 Description: More about what it does (maybe more than one line)
     Use four spaces when indenting paragraphs within the Description.
@@ -14,3 +14,5 @@ Imports:
 	ggplot2,
 	lubridate,
 	tools
+Suggests: 
+    testthat
